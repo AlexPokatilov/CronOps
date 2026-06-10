@@ -1,0 +1,35 @@
+# Daily POST with bearer-token auth pulled from a Secret.
+apiVersion: cronops.io/v1alpha1
+kind: HttpCronJob
+metadata:
+  name: nightly-report
+  namespace: default
+spec:
+  schedule: "0 3 * * *"
+  timezone: Europe/Kyiv
+  endpoint: https://api.example.com/v1/reports/run
+  method: POST
+  headers:
+    - name: Content-Type
+      value: application/json
+    - name: X-Request-Source
+      value: cronops
+  auth:
+    type: bearer
+    secretRef:
+      name: report-api-token
+      # key defaults to "token"
+  body: |
+    {"period": "daily", "format": "pdf"}
+  timeoutSeconds: 30
+  concurrencyPolicy: Forbid
+  historyLimit: 10
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: report-api-token
+  namespace: default
+type: Opaque
+stringData:
+  token: replace-me

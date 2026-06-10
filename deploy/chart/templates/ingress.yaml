@@ -1,0 +1,33 @@
+{{- if .Values.server.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: cronops-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: cronops-server
+    {{- include "cronops.labels" . | nindent 4 }}
+  {{- with .Values.server.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.server.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.server.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: cronops-server
+                port:
+                  name: http
+  {{- with .Values.server.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

@@ -2,7 +2,7 @@
 
 **Kubernetes-native cronjob manager для HTTP-викликів.** GitOps-first підхід за зразком ArgoCD: усі об'єкти системи — це CRD, а Kubernetes API (etcd) виступає одночасно джерелом правди та базою даних. Жодної зовнішньої БД.
 
-> Статус: 🚧 етап проєктування / MVP в розробці.
+> Статус: ✅ MVP (v0.1) реалізовано — контролер, REST API, Web UI, Helm chart. Див. [чекліст MVP](#mvp--обсяг-робіт) та [Roadmap](#roadmap).
 
 ---
 
@@ -57,8 +57,8 @@ CronOps вирішує задачу планування та виконання
 | Backend | **Go 1.24+**, [controller-runtime](https://github.com/kubernetes-sigs/controller-runtime) / kubebuilder | Стандарт де-факто для K8s-операторів: informers, кеші, leader election, генерація CRD «з коробки». ArgoCD написаний саме так |
 | Cron-движок | [robfig/cron/v3](https://github.com/robfig/cron) | Перевірена бібліотека, підтримка таймзон і стандартного cron-синтаксису |
 | API Server | Go, `net/http` + [chi](https://github.com/go-chi/chi) router | Легкий REST без зайвих залежностей |
-| Frontend | **React 18 + TypeScript + Vite**, CSS (Tailwind) | Вимога; Vite — швидкий dev/build |
-| YAML-редактор в UI | Monaco Editor | Звичний досвід «як у VS Code», підсвітка YAML |
+| Frontend | **React 18 + TypeScript + Vite**, чистий CSS | Вимога; Vite — швидкий dev/build; без CSS-фреймворку в MVP |
+| YAML-редактор в UI | Простий редактор у MVP; Monaco Editor — Roadmap (v0.4) | Monaco вимагає локального бандлінгу воркерів — свідомо відкладено |
 | База даних | **немає** — Kubernetes API / etcd | CRD `spec` + `status` + Events |
 | Деплой | Kubernetes ≥ 1.27, Helm chart + сирі маніфести | |
 | CI | GitHub Actions | lint, test, build, публікація образів |
@@ -298,10 +298,20 @@ namespace: cronops
 ```
 
 ```bash
-# швидкий старт (після релізу образів)
-helm install cronops ./deploy/chart -n cronops --create-namespace
+# 1. Згенерувати креденшели UI
+htpasswd -bnBC 10 "" 'your-password' | tr -d ':\n' | sed 's/$2y/$2a/'  # bcrypt-хеш
+openssl rand -base64 32                                                # JWT-ключ
 
-# створення задачі вручну, без UI
+# 2. Встановити chart (секрети створює chart або керуйте ними самостійно)
+helm install cronops ./deploy/chart -n cronops --create-namespace \
+  --set auth.createSecrets=true \
+  --set auth.users.admin='<bcrypt-хеш>' \
+  --set auth.jwtKey='<jwt-ключ>'
+
+# Альтернатива — сирі маніфести:
+kubectl apply -f deploy/crd/ -f deploy/manifests/   # секрети: див. 05-secrets.example.yaml
+
+# 3. Створення задачі вручну, без UI
 kubectl apply -f examples/nightly-report.yaml
 kubectl get hcj -A
 ```
@@ -312,25 +322,27 @@ kubectl get hcj -A
 
 ```
 CronOps/
-├── api/v1alpha1/            # Go-типи CRD (kubebuilder), генерація deepcopy + CRD yaml
+├── api/v1alpha1/            # Go-типи CRD (kubebuilder-маркери) + згенерований deepcopy
 ├── cmd/
 │   ├── controller/          # main для cronops-controller
 │   └── server/              # main для cronops-server
 ├── internal/
-│   ├── controller/          # Reconciler
+│   ├── controller/          # Reconciler + виконання запусків (runJob)
 │   ├── scheduler/           # обгортка robfig/cron, реєстр entries
 │   ├── executor/            # HTTP-виконавець (auth, timeout, критерії успіху)
-│   ├── apiserver/           # REST handlers, middleware, JWT
-│   └── auth/                # users secret, bcrypt, токени
+│   ├── apiserver/           # REST handlers, middleware, статика SPA
+│   └── auth/                # users secret, bcrypt, JWT cookie
 ├── web/                     # React + TS + Vite (frontend)
-│   └── src/{pages,components,api,...}
+│   └── src/{pages,components,api.ts,types.ts}
 ├── deploy/
-│   ├── crd/                 # згенерований CRD-маніфест
-│   ├── manifests/           # сирі K8s-маніфести
-│   └── chart/               # Helm chart
+│   ├── crd/                 # згенерований CRD-маніфест (make generate)
+│   ├── manifests/           # сирі K8s-маніфести (namespace, RBAC, deployments)
+│   └── chart/               # Helm chart (crds/ + templates/)
 ├── examples/                # приклади HttpCronJob
-├── hack/                    # скрипти dev-оточення (kind, tilt)
-└── docs/                    # розширена документація
+├── hack/                    # скрипти dev-оточення (kind)
+├── Dockerfile.controller    # distroless-образ контролера
+├── Dockerfile.server        # distroless-образ API+UI
+└── Makefile                 # build/test/generate/docker
 ```
 
 ---
@@ -340,35 +352,36 @@ CronOps/
 **Мета MVP:** робочий цикл «створив задачу (UI-форма / YAML / kubectl) → контролер виконав HTTP-виклик за розкладом → результат видно на dashboard».
 
 ### Backend-контролер
-- [ ] CRD `HttpCronJob` v1alpha1: schedule, endpoint, method, headers, auth (none/basic/bearer/apiKey через secretRef), body, timezone, suspend, timeoutSeconds, historyLimit, concurrencyPolicy
-- [ ] Kubebuilder-скелет, генерація CRD з OpenAPI-валідацією
-- [ ] Reconciliation loop: watch + resync, реєстрація/оновлення/зняття cron entries
-- [ ] Scheduler на robfig/cron з підтримкою таймзон
-- [ ] Executor: HTTP-виклик з таймаутом, підстановка креденшелів із Secret
-- [ ] Запис `status` (phase, lastRun, history, next/lastScheduleTime) + Kubernetes Events
-- [ ] Обробка suspend та невалідних spec (`phase: Invalid`)
-- [ ] Leader election, `/healthz` `/readyz` `/metrics`
-- [ ] Unit-тести reconciler/executor (envtest)
+- [x] CRD `HttpCronJob` v1alpha1: schedule, endpoint, method, headers, auth (none/basic/bearer/apiKey через secretRef), body, timezone, suspend, timeoutSeconds, historyLimit, concurrencyPolicy
+- [x] Go-типи з kubebuilder-маркерами, генерація CRD з OpenAPI-валідацією (controller-gen)
+- [x] Reconciliation loop: watch + resync, реєстрація/оновлення/зняття cron entries
+- [x] Scheduler на robfig/cron з підтримкою таймзон (`CRON_TZ`)
+- [x] Executor: HTTP-виклик з таймаутом, підстановка креденшелів із Secret
+- [x] Запис `status` (phase, lastRun, history, next/lastScheduleTime) + Kubernetes Events
+- [x] Обробка suspend та невалідних spec (`phase: Invalid`)
+- [x] Leader election, `/healthz` `/readyz` `/metrics`
+- [x] Unit-тести reconciler/executor/scheduler (fake client + httptest)
 
 ### API Server
-- [ ] REST API за таблицею вище
-- [ ] Логін зі статичними користувачами (Secret + bcrypt) і JWT cookie
-- [ ] Створення з YAML із server-side dry-run валідацією
-- [ ] Агрегація `/stats` зі status усіх ресурсів
+- [x] REST API за таблицею вище
+- [x] Логін зі статичними користувачами (Secret + bcrypt) і JWT cookie
+- [x] Створення з YAML із server-side dry-run валідацією (`?dryRun=true`)
+- [x] Агрегація `/stats` зі status усіх ресурсів
+- [x] Unit-тести handler'ів (login, CRUD, suspend, stats)
 
 ### Frontend
-- [ ] Сторінка логіну
-- [ ] Dashboard: total + розбивка active/suspended/invalid + останні запуски success/failed
-- [ ] Список задач з діями (suspend/resume/delete)
-- [ ] Створення: форма (обов'язкові/необов'язкові поля) + YAML-режим (Monaco)
-- [ ] Сторінка деталей задачі з історією запусків
+- [x] Сторінка логіну
+- [x] Dashboard: total + розбивка active/suspended/invalid + останні запуски success/failed
+- [x] Список задач з діями (suspend/resume/delete)
+- [x] Створення: форма (обов'язкові/необов'язкові поля) з live-прев'ю YAML + YAML-режим з dry-run валідацією
+- [x] Сторінка деталей задачі з історією запусків
 
 ### Інфраструктура
-- [ ] Dockerfile (multi-stage) для обох сервісів
-- [ ] Helm chart + сирі маніфести + RBAC
-- [ ] CI: lint (golangci-lint, eslint), tests, build образів
-- [ ] `hack/` для локального kind-кластера
-- [ ] Приклади в `examples/`
+- [x] Dockerfile (multi-stage, distroless) для обох сервісів
+- [x] Helm chart + сирі маніфести + RBAC (least privilege)
+- [x] CI (GitHub Actions): go build/vet/test, tsc+vite build, docker build
+- [x] `hack/kind-up.sh` для локального kind-кластера
+- [x] Приклади в `examples/`
 
 **Свідомо поза MVP:** власний GitOps-механізм (sync із Git), retry-політики, run-now, окремий Run-CRD, OIDC, нотифікації, multi-cluster.
 
@@ -420,19 +433,24 @@ CronOps/
 
 ```bash
 # 1. Локальний кластер
-hack/kind-up.sh                      # kind create cluster + install CRD
+hack/kind-up.sh                          # kind create cluster + install CRD
 
 # 2. Контролер (поза кластером, з локальним kubeconfig)
-go run ./cmd/controller
+go run ./cmd/controller --leader-elect=false
 
-# 3. API server
-go run ./cmd/server --dev            # CORS для vite dev server
+# 3. API server (порт 8090; --dev: логін admin/admin + CORS для vite)
+go run ./cmd/server --dev
 
-# 4. Frontend
-cd web && npm install && npm run dev # http://localhost:5173
+# 4. Frontend (vite dev server проксує /api на :8090)
+cd web && npm install && npm run dev     # http://localhost:5173
 
 # 5. Тестова задача
-kubectl apply -f examples/nightly-report.yaml
+kubectl apply -f examples/simple-ping.yaml
+kubectl get hcj -A
+
+# Тести та регенерація CRD після зміни api/v1alpha1
+make test
+make generate
 ```
 
 ---
