@@ -57,11 +57,11 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 
 // jobView is the wire format for a single HttpCronJob.
 type jobView struct {
-	Name      string                           `json:"name"`
-	Namespace string                           `json:"namespace"`
-	Spec      cronopsv1alpha1.HttpCronJobSpec  `json:"spec"`
+	Name      string                            `json:"name"`
+	Namespace string                            `json:"namespace"`
+	Spec      cronopsv1alpha1.HttpCronJobSpec   `json:"spec"`
 	Status    cronopsv1alpha1.HttpCronJobStatus `json:"status"`
-	CreatedAt metav1.Time                      `json:"createdAt"`
+	CreatedAt metav1.Time                       `json:"createdAt"`
 }
 
 func toView(j *cronopsv1alpha1.HttpCronJob) jobView {
@@ -246,11 +246,11 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 // statsResponse aggregates dashboard numbers from the status of all jobs.
 type statsResponse struct {
-	Total     int       `json:"total"`
-	Active    int       `json:"active"`
-	Suspended int       `json:"suspended"`
-	Invalid   int       `json:"invalid"`
-	LastRuns  runTotals `json:"lastRuns"`
+	Total     int         `json:"total"`
+	Active    int         `json:"active"`
+	Suspended int         `json:"suspended"`
+	Invalid   int         `json:"invalid"`
+	LastRuns  runTotals   `json:"lastRuns"`
 	Recent    []recentRun `json:"recentRuns"`
 }
 
@@ -260,8 +260,8 @@ type runTotals struct {
 }
 
 type recentRun struct {
-	Job       string      `json:"job"`
-	Namespace string      `json:"namespace"`
+	Job                       string `json:"job"`
+	Namespace                 string `json:"namespace"`
 	cronopsv1alpha1.RunResult `json:",inline"`
 }
 
