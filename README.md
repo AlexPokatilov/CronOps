@@ -247,7 +247,7 @@ React SPA, сторінки MVP:
 2. `POST /api/v1/auth/login` перевіряє пароль → видає короткоживучий JWT (підпис ключем із Secret) у httpOnly cookie.
 3. Middleware перевіряє JWT на всіх `/api/v1/*`, крім `/auth/login` та `/healthz`.
 
-SSO/OIDC (Dex, як в ArgoCD) — у Roadmap. До зовнішніх endpoint'ів задачі автентифікуються окремо — через `spec.auth` + Secret.
+LDAP та SSO/OIDC (Dex, як в ArgoCD) — у Roadmap (v0.3). До зовнішніх endpoint'ів задачі автентифікуються окремо — через `spec.auth` + Secret.
 
 ### Зберігання даних
 
@@ -387,6 +387,7 @@ CronOps/
 - Prometheus-метрики запусків + готовий Grafana dashboard
 
 ### v0.3 — Користувачі та доступ
+- LDAP-авторизація (Active Directory / OpenLDAP): bind-перевірка пароля, мапінг LDAP-груп на ролі
 - OIDC/SSO (Dex), ролі read-only / editor / admin
 - Project-модель як в ArgoCD: групування задач, обмеження namespace'ів і доменів endpoint'ів на проєкт
 - Audit log дій користувачів (Events / структуровані логи)
@@ -397,8 +398,9 @@ CronOps/
 - Шаблони задач, дублювання, bulk-операції
 - Валідація cron-виразу з людським описом («щодня о 03:00») у формі
 
-### v1.0 — GitOps та масштаб
-- **Власний GitOps-режим**: контролер синхронізує `HttpCronJob` з Git-репозиторію (поки що це робиться зовнішнім ArgoCD/Flux)
+### v1.0 — GitOps та масштаб *(відкладено — до визначення необхідності)*
+Ідеї зафіксовані як кандидати, рішення про реалізацію буде ухвалено пізніше; поки що GitOps-деплой маніфестів повністю покривається зовнішнім ArgoCD/Flux:
+- Власний GitOps-режим: контролер синхронізує `HttpCronJob` з Git-репозиторію
 - Drift detection і статус синхронізації (Synced/OutOfSync) у UI
 - Multi-cluster: керування задачами в кількох кластерах з одного UI
 - Не-HTTP виконавці: gRPC, запуск K8s Job
