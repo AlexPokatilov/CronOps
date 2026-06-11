@@ -459,12 +459,13 @@ CronOps/
 - Retry-політика (attempts + backoff), `concurrencyPolicy: Replace`
 - Кнопка/ендпоінт **run-now** (позачерговий запуск)
 - Перевірка тіла відповіді (jsonpath/regex-критерії успіху, не лише HTTP-код)
-- Prometheus-метрики запусків + готовий Grafana dashboard
+- CRD `CronProject` — поділ cron-задач на проєкти: `HttpCronJob.spec.project` посилається на проєкт, групування та фільтрація за проєктами в UI та API
 
 ### v0.3 — Користувачі та доступ
 - LDAP-авторизація (Active Directory / OpenLDAP): bind-перевірка пароля, мапінг LDAP-груп на ролі
 - OIDC/SSO (Dex), ролі read-only / editor / admin
-- Project-модель як в ArgoCD: групування задач, обмеження namespace'ів і доменів endpoint'ів на проєкт
+- Обмеження на рівні `CronProject` (як в ArgoCD Projects): дозволені namespace'и та домени endpoint'ів на проєкт, доступ ролей до проєктів
+- Імпорт власних CA-сертифікатів із Secret — довіра до endpoint'ів з приватними/самопідписаними сертифікатами при HTTPS-викликах
 - Audit log дій користувачів (Events / структуровані логи)
 
 ### v0.4 — UX та інтеграції
