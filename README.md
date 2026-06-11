@@ -320,6 +320,62 @@ kubectl apply -f examples/nightly-report.yaml
 kubectl get hcj -A
 ```
 
+### Тестування на реальному кластері
+
+Після мерджу в `main` CI автоматично публікує артефакти в GHCR:
+
+| Артефакт | Адреса | Теги |
+|---|---|---|
+| Образ контролера | `ghcr.io/alexpokatilov/cronops-controller` | `latest`, `sha-<commit>`, `<semver>` для тегів `v*` |
+| Образ API+UI | `ghcr.io/alexpokatilov/cronops-server` | ті самі |
+| Helm chart | `oci://ghcr.io/alexpokatilov/charts/cronops` | версія з `Chart.yaml`; для тегів `v*` — версія тега |
+
+> ⚠️ Перша публікація створює пакети **приватними**. Зробіть їх публічними в GitHub → Packages → Package settings → Change visibility, або додайте `imagePullSecrets` у деплойменти.
+
+```bash
+# 1. Креденшели UI
+HASH=$(htpasswd -bnBC 10 "" 'your-password' | tr -d ':\n' | sed 's/$2y/$2a/')
+JWT=$(openssl rand -base64 32)
+
+# 2. Встановлення з OCI-реєстру (CRD ставиться автоматично з crds/ чарта)
+helm install cronops oci://ghcr.io/alexpokatilov/charts/cronops \
+  -n cronops --create-namespace \
+  --set auth.createSecrets=true \
+  --set "auth.users.admin=$HASH" \
+  --set auth.jwtKey="$JWT"
+
+# 3. Перевірка, що все піднялось
+kubectl -n cronops get pods                       # 2x controller (1 лідер), 2x server
+kubectl -n cronops logs deploy/cronops-controller | head
+kubectl get crd httpcronjobs.cronops.io
+
+# 4. Доступ до UI без Ingress — port-forward
+kubectl -n cronops port-forward svc/cronops-server 8090:80
+# → http://localhost:8090 (логін admin / your-password)
+
+# 5. Тестова задача та спостереження за запусками
+kubectl apply -f examples/simple-ping.yaml
+kubectl get hcj -A -w                             # phase, last result
+kubectl describe hcj simple-ping                  # status.history + Events
+kubectl -n cronops logs deploy/cronops-controller -f
+
+# 6. Suspend/Resume та видалення з CLI
+kubectl patch hcj simple-ping --type merge -p '{"spec":{"suspend":true}}'
+kubectl delete hcj simple-ping
+```
+
+Для тесту останніх змін із `main` на «живому» кластері використовуйте тег `latest` із примусовим pull:
+
+```bash
+helm upgrade cronops oci://ghcr.io/alexpokatilov/charts/cronops -n cronops \
+  --reuse-values \
+  --set controller.image.pullPolicy=Always \
+  --set server.image.pullPolicy=Always
+kubectl -n cronops rollout restart deploy/cronops-controller deploy/cronops-server
+```
+
+Для відтворюваних деплоїв краще пінити образ на коміт: `--set controller.image.tag=sha-<commit>` (тег публікується для кожного коміту в `main`).
+
 ---
 
 ## Структура репозиторію
@@ -383,7 +439,7 @@ CronOps/
 ### Інфраструктура
 - [x] Dockerfile (multi-stage, distroless) для обох сервісів
 - [x] Helm chart + сирі маніфести + RBAC (least privilege)
-- [x] CI (GitHub Actions): go build/vet/test, tsc+vite build, docker build
+- [x] CI (GitHub Actions): go build/vet/test, tsc+vite build, docker build; публікація образів і Helm-чарта в GHCR з `main`/тегів
 - [x] `hack/kind-up.sh` для локального kind-кластера
 - [x] Приклади в `examples/`
 
