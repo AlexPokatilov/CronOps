@@ -254,6 +254,12 @@ button.link:hover { text-decoration: underline; background: none; }
   margin: 0;
 }
 
+.run-row { cursor: pointer; }
+.run-detail td { background: var(--bg); }
+.run-detail-block { margin: 8px 0; }
+.run-detail-block .yaml-preview { margin-top: 6px; max-height: 280px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+.expand-hint { font-size: 11px; text-align: right; }
+
 .detail-grid { display: grid; grid-template-columns: 180px 1fr; gap: 8px 16px; }
 .detail-grid dt { color: var(--text-dim); }
 .detail-grid dd { margin: 0; word-break: break-all; }

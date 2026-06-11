@@ -92,6 +92,53 @@ func TestRunSuccess(t *testing.T) {
 	}
 }
 
+func TestRunCapturesResponseBody(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"queued","id":42}`))
+	}))
+	defer ts.Close()
+
+	e := New(fake.NewClientBuilder().WithScheme(newScheme(t)).Build())
+	res := e.Run(context.Background(), baseJob(ts.URL))
+	if res.Body != `{"status":"queued","id":42}` {
+		t.Fatalf("Body = %q, want response body captured", res.Body)
+	}
+}
+
+func TestRunTruncatesResponseBody(t *testing.T) {
+	big := make([]byte, 10<<10) // 10 KiB
+	for i := range big {
+		big[i] = 'x'
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(big)
+	}))
+	defer ts.Close()
+
+	e := New(fake.NewClientBuilder().WithScheme(newScheme(t)).Build())
+	res := e.Run(context.Background(), baseJob(ts.URL))
+	if len(res.Body) != maxCaptureBytes {
+		t.Fatalf("len(Body) = %d, want truncated to %d", len(res.Body), maxCaptureBytes)
+	}
+}
+
+func TestRunCaptureDisabled(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("sensitive"))
+	}))
+	defer ts.Close()
+
+	job := baseJob(ts.URL)
+	off := false
+	job.Spec.CaptureResponseBody = &off
+
+	e := New(fake.NewClientBuilder().WithScheme(newScheme(t)).Build())
+	res := e.Run(context.Background(), job)
+	if res.Body != "" {
+		t.Fatalf("Body = %q, want empty when capture is disabled", res.Body)
+	}
+}
+
 func TestRunFailureStatus(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)

@@ -45,6 +45,7 @@ interface FormState {
   authSecretKey: string;
   authHeaderName: string;
   headers: HeaderSpec[];
+  captureResponseBody: boolean;
 }
 
 const initialForm: FormState = {
@@ -63,6 +64,7 @@ const initialForm: FormState = {
   authSecretKey: "",
   authHeaderName: "",
   headers: [],
+  captureResponseBody: true,
 };
 
 function buildSpec(f: FormState): HttpCronJobSpec {
@@ -76,6 +78,7 @@ function buildSpec(f: FormState): HttpCronJobSpec {
   if (f.timeoutSeconds) spec.timeoutSeconds = Number(f.timeoutSeconds);
   if (f.historyLimit) spec.historyLimit = Number(f.historyLimit);
   if (f.concurrencyPolicy !== "Forbid") spec.concurrencyPolicy = f.concurrencyPolicy;
+  if (!f.captureResponseBody) spec.captureResponseBody = false;
   const headers = f.headers.filter((h) => h.name);
   if (headers.length > 0) spec.headers = headers;
   if (f.authType !== "none") {
@@ -360,6 +363,18 @@ export function CronJobNewPage() {
                   placeholder="10"
                 />
               </div>
+            </div>
+
+            <div className="field">
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  style={{ width: "auto" }}
+                  checked={form.captureResponseBody}
+                  onChange={(e) => set("captureResponseBody", e.target.checked)}
+                />
+                Capture response body in run history (first 2 KiB; disable for sensitive responses)
+              </label>
             </div>
 
             <div className="actions">

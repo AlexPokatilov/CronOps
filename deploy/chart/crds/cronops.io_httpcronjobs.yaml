@@ -93,6 +93,13 @@ spec:
               body:
                 description: Body sent with the request (for methods that accept one).
                 type: string
+              captureResponseBody:
+                default: true
+                description: |-
+                  CaptureResponseBody stores a truncated snippet (first 2 KiB) of each
+                  response body in run history so it can be inspected in the UI.
+                  Disable for endpoints that return sensitive data.
+                type: boolean
               concurrencyPolicy:
                 default: Forbid
                 description: |-
@@ -230,6 +237,10 @@ spec:
                 items:
                   description: RunResult records the outcome of a single run.
                   properties:
+                    durationMs:
+                      description: DurationMs is the wall-clock run time in milliseconds.
+                      format: int64
+                      type: integer
                     finishedAt:
                       format: date-time
                       type: string
@@ -237,6 +248,11 @@ spec:
                       format: int32
                       type: integer
                     message:
+                      type: string
+                    responseBody:
+                      description: |-
+                        ResponseBody is a truncated snippet of the response body
+                        (see spec.captureResponseBody).
                       type: string
                     result:
                       enum:
@@ -254,6 +270,10 @@ spec:
               lastRun:
                 description: RunResult records the outcome of a single run.
                 properties:
+                  durationMs:
+                    description: DurationMs is the wall-clock run time in milliseconds.
+                    format: int64
+                    type: integer
                   finishedAt:
                     format: date-time
                     type: string
@@ -261,6 +281,11 @@ spec:
                     format: int32
                     type: integer
                   message:
+                    type: string
+                  responseBody:
+                    description: |-
+                      ResponseBody is a truncated snippet of the response body
+                      (see spec.captureResponseBody).
                     type: string
                   result:
                     enum:

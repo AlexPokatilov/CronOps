@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { stringify } from "yaml";
 import { api } from "../api";
@@ -9,6 +9,7 @@ export function CronJobDetailPage() {
   const { namespace = "", name = "" } = useParams();
   const [job, setJob] = useState<JobView | null>(null);
   const [error, setError] = useState("");
+  const [expandedRun, setExpandedRun] = useState<number | null>(null);
   const navigate = useNavigate();
 
   const load = useCallback(() => {
@@ -119,23 +120,56 @@ export function CronJobDetailPage() {
             <thead>
               <tr>
                 <th>Started</th>
-                <th>Finished</th>
+                <th>Duration</th>
                 <th>Result</th>
                 <th>HTTP</th>
                 <th>Message</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
               {job.status.history.map((run, i) => (
-                <tr key={i}>
-                  <td>{formatTime(run.startedAt)}</td>
-                  <td>{formatTime(run.finishedAt)}</td>
-                  <td>
-                    <ResultBadge result={run.result} />
-                  </td>
-                  <td className="mono">{run.httpStatusCode || "—"}</td>
-                  <td className="dim">{run.message || ""}</td>
-                </tr>
+                <Fragment key={i}>
+                  <tr
+                    className="run-row"
+                    onClick={() => setExpandedRun(expandedRun === i ? null : i)}
+                  >
+                    <td>{formatTime(run.startedAt)}</td>
+                    <td className="dim">
+                      {run.durationMs != null ? `${run.durationMs} ms` : "—"}
+                    </td>
+                    <td>
+                      <ResultBadge result={run.result} />
+                    </td>
+                    <td className="mono">{run.httpStatusCode || "—"}</td>
+                    <td className="dim">{run.message || ""}</td>
+                    <td className="dim expand-hint">{expandedRun === i ? "▲" : "▼"}</td>
+                  </tr>
+                  {expandedRun === i && (
+                    <tr className="run-detail">
+                      <td colSpan={6}>
+                        {run.message && (
+                          <div className="run-detail-block">
+                            <div className="dim">Message</div>
+                            <pre className="yaml-preview">{run.message}</pre>
+                          </div>
+                        )}
+                        <div className="run-detail-block">
+                          <div className="dim">Response body (truncated to 2 KiB)</div>
+                          {run.responseBody ? (
+                            <pre className="yaml-preview">{run.responseBody}</pre>
+                          ) : (
+                            <div className="dim" style={{ padding: "8px 0" }}>
+                              {job.spec.captureResponseBody === false
+                                ? "Response body capture is disabled for this job (spec.captureResponseBody: false)."
+                                : "Empty response body."}
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>

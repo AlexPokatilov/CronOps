@@ -165,6 +165,8 @@ spec:
     backoffSeconds: 10
   concurrencyPolicy: Forbid       # Allow|Forbid (default: Forbid)
   historyLimit: 10                # скільки останніх запусків тримати в status
+  captureResponseBody: true       # зберігати фрагмент відповіді (2 КіБ) в історії;
+                                  # вимкніть для чутливих відповідей (default: true)
 
 status:                           # заповнює контролер (status subresource)
   phase: Active                   # Active|Suspended|Invalid
@@ -176,6 +178,8 @@ status:                           # заповнює контролер (status 
     finishedAt: "2026-06-10T03:00:02Z"
     result: Success               # Success|Failed
     httpStatusCode: 200
+    durationMs: 1840
+    responseBody: '{"report":"queued"}'   # обрізаний до 2 КіБ фрагмент
     message: ""
   history:                        # кільцевий буфер останніх historyLimit запусків
     - startedAt: "..."
@@ -461,6 +465,7 @@ make generate
 - RBAC за принципом мінімальних прав: controller не може змінювати `spec`, server не може писати `status`.
 - JWT-ключ і паролі користувачів — у Secrets; паролі зберігаються як bcrypt-хеші.
 - Таймаути та ліміт розміру відповіді в executor — захист від «зависання» на повільних endpoint'ах.
+- Фрагмент тіла відповіді в історії запусків обрізається до 2 КіБ і вимикається через `spec.captureResponseBody: false`, якщо endpoint повертає чутливі дані.
 - Roadmap: allowlist доменів endpoint'ів на рівні проєкту (захист від SSRF з UI), NetworkPolicy.
 
 ---

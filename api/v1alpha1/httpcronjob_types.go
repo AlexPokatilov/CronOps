@@ -116,6 +116,13 @@ type HttpCronJobSpec struct {
 	// +kubebuilder:validation:Maximum=50
 	// +optional
 	HistoryLimit *int32 `json:"historyLimit,omitempty"`
+
+	// CaptureResponseBody stores a truncated snippet (first 2 KiB) of each
+	// response body in run history so it can be inspected in the UI.
+	// Disable for endpoints that return sensitive data.
+	// +kubebuilder:default=true
+	// +optional
+	CaptureResponseBody *bool `json:"captureResponseBody,omitempty"`
 }
 
 // RunResult records the outcome of a single run.
@@ -129,6 +136,13 @@ type RunResult struct {
 	HTTPStatusCode int32 `json:"httpStatusCode,omitempty"`
 	// +optional
 	Message string `json:"message,omitempty"`
+	// DurationMs is the wall-clock run time in milliseconds.
+	// +optional
+	DurationMs int64 `json:"durationMs,omitempty"`
+	// ResponseBody is a truncated snippet of the response body
+	// (see spec.captureResponseBody).
+	// +optional
+	ResponseBody string `json:"responseBody,omitempty"`
 }
 
 // HttpCronJobStatus defines the observed state of HttpCronJob.
@@ -200,4 +214,13 @@ func (j *HttpCronJob) HistoryLimitOrDefault() int32 {
 		return *j.Spec.HistoryLimit
 	}
 	return 10
+}
+
+// CaptureResponseBodyOrDefault returns spec.captureResponseBody with the API
+// default applied.
+func (j *HttpCronJob) CaptureResponseBodyOrDefault() bool {
+	if j.Spec.CaptureResponseBody != nil {
+		return *j.Spec.CaptureResponseBody
+	}
+	return true
 }

@@ -27,6 +27,7 @@ export interface HttpCronJobSpec {
   successHttpCodes?: string[];
   concurrencyPolicy?: "Allow" | "Forbid";
   historyLimit?: number;
+  captureResponseBody?: boolean;
 }
 
 export interface RunResult {
@@ -35,6 +36,8 @@ export interface RunResult {
   result: "Success" | "Failed";
   httpStatusCode?: number;
   message?: string;
+  durationMs?: number;
+  responseBody?: string;
 }
 
 export interface Condition {

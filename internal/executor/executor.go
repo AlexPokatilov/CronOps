@@ -21,11 +21,18 @@ import (
 // protecting the controller from endpoints that stream unbounded data.
 const maxDrainBytes = 1 << 20 // 1 MiB
 
+// maxCaptureBytes caps the response body snippet stored in run history; it is
+// kept small because history lives inside the resource status in etcd.
+const maxCaptureBytes = 2 << 10 // 2 KiB
+
 // Result is the outcome of a single HTTP run.
 type Result struct {
 	Success    bool
 	StatusCode int
 	Message    string
+	// Body is a snippet of the response body, truncated to maxCaptureBytes
+	// (empty when capture is disabled in the spec).
+	Body string
 }
 
 // Executor builds and sends the HTTP request described by a HttpCronJob spec,
@@ -69,11 +76,18 @@ func (e *Executor) Run(ctx context.Context, job *cronopsv1alpha1.HttpCronJob) Re
 		return Result{Message: fmt.Sprintf("request failed: %v", err)}
 	}
 	defer resp.Body.Close()
+
+	var snippet string
+	if job.CaptureResponseBodyOrDefault() {
+		captured, _ := io.ReadAll(io.LimitReader(resp.Body, maxCaptureBytes))
+		snippet = string(captured)
+	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrainBytes))
 
 	res := Result{
 		StatusCode: resp.StatusCode,
 		Success:    CodeMatches(resp.StatusCode, job.Spec.SuccessHTTPCodes),
+		Body:       snippet,
 	}
 	if !res.Success {
 		res.Message = fmt.Sprintf("unexpected status %d", resp.StatusCode)

@@ -137,6 +137,8 @@ func (r *HttpCronJobReconciler) runJob(key types.NamespacedName) {
 		Result:         cronopsv1alpha1.ResultFailed,
 		HTTPStatusCode: int32(res.StatusCode),
 		Message:        res.Message,
+		DurationMs:     finished.Time.Sub(started.Time).Milliseconds(),
+		ResponseBody:   res.Body,
 	}
 	if res.Success {
 		run.Result = cronopsv1alpha1.ResultSuccess
@@ -220,6 +222,8 @@ func runEqual(a, b *cronopsv1alpha1.RunResult) bool {
 	return a.Result == b.Result &&
 		a.HTTPStatusCode == b.HTTPStatusCode &&
 		a.Message == b.Message &&
+		a.DurationMs == b.DurationMs &&
+		a.ResponseBody == b.ResponseBody &&
 		a.StartedAt.Time.Truncate(time.Second).Equal(b.StartedAt.Time.Truncate(time.Second)) &&
 		timePtrEqual(a.FinishedAt, b.FinishedAt)
 }
