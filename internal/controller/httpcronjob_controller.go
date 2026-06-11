@@ -5,7 +5,6 @@ package controller
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -28,14 +27,16 @@ type HttpCronJobReconciler struct {
 	client.Client
 	Recorder  record.EventRecorder
 	Scheduler *scheduler.Scheduler
-	Executor  *executor.Executor
 
-	// running tracks in-flight runs per resource for ConcurrencyPolicy=Forbid.
-	running sync.Map
+	// Tracker is shared with the HttpCronJobRun reconciler, which executes
+	// the runs; here it backs the Forbid fast-path at cron-fire time.
+	Tracker *RunTracker
 }
 
 // +kubebuilder:rbac:groups=cronops.io,resources=httpcronjobs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cronops.io,resources=httpcronjobs/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=cronops.io,resources=httpcronjobruns,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=cronops.io,resources=httpcronjobruns/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
@@ -56,6 +57,9 @@ func (r *HttpCronJobReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	cronSpec, err := scheduler.BuildCronSpec(job.Spec.Schedule, job.Spec.Timezone)
 	if err == nil {
 		err = executor.ValidateAuth(job.Spec.Auth)
+	}
+	if err == nil {
+		err = executor.ValidateCriteria(job.Spec.SuccessCriteria)
 	}
 	if err != nil {
 		r.Scheduler.Remove(req.NamespacedName)
@@ -100,7 +104,8 @@ func (r *HttpCronJobReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 }
 
 // runJob is the cron callback: it re-reads the resource, honours suspend and
-// concurrency policy, executes the HTTP call and records the result.
+// the Forbid concurrency policy, and creates a HttpCronJobRun that the run
+// reconciler picks up and executes.
 func (r *HttpCronJobReconciler) runJob(key types.NamespacedName) {
 	ctx := context.Background()
 	log := logf.Log.WithName("runner").WithValues("httpcronjob", key.String())
@@ -118,74 +123,71 @@ func (r *HttpCronJobReconciler) runJob(key types.NamespacedName) {
 		return
 	}
 
-	if job.Spec.ConcurrencyPolicy != cronopsv1alpha1.ConcurrencyAllow {
-		if _, inFlight := r.running.LoadOrStore(key.String(), struct{}{}); inFlight {
-			r.Recorder.Event(&job, "Warning", "SkippedConcurrent",
-				"previous run still in progress, skipping (concurrencyPolicy: Forbid)")
-			return
-		}
-		defer r.running.Delete(key.String())
+	// Forbid skips silently (event only) so the run history is not littered
+	// with skip records on every overlapping tick.
+	if job.Spec.ConcurrencyPolicy != cronopsv1alpha1.ConcurrencyAllow &&
+		job.Spec.ConcurrencyPolicy != cronopsv1alpha1.ConcurrencyReplace &&
+		r.Tracker.busy(key) {
+		r.Recorder.Event(&job, "Warning", "SkippedConcurrent",
+			"previous run still in progress, skipping (concurrencyPolicy: Forbid)")
+		return
 	}
 
-	started := metav1.Now()
-	res := r.Executor.Run(ctx, &job)
-	finished := metav1.Now()
-
-	run := cronopsv1alpha1.RunResult{
-		StartedAt:      started,
-		FinishedAt:     &finished,
-		Result:         cronopsv1alpha1.ResultFailed,
-		HTTPStatusCode: int32(res.StatusCode),
-		Message:        res.Message,
-		DurationMs:     finished.Time.Sub(started.Time).Milliseconds(),
-		ResponseBody:   res.Body,
-	}
-	if res.Success {
-		run.Result = cronopsv1alpha1.ResultSuccess
-		r.Recorder.Eventf(&job, "Normal", "RunSucceeded", "HTTP %d from %s", res.StatusCode, job.Spec.Endpoint)
-	} else {
-		r.Recorder.Eventf(&job, "Warning", "RunFailed", "%s", res.Message)
-	}
-
-	cronSpec, specErr := scheduler.BuildCronSpec(job.Spec.Schedule, job.Spec.Timezone)
-	if err := r.patchStatus(ctx, &job, func(st *cronopsv1alpha1.HttpCronJobStatus) {
-		st.LastScheduleTime = &started
-		st.LastRun = &run
-		limit := int(job.HistoryLimitOrDefault())
-		st.History = append([]cronopsv1alpha1.RunResult{run}, st.History...)
-		if len(st.History) > limit {
-			st.History = st.History[:limit]
-		}
-		if specErr == nil {
-			if next, err := scheduler.NextRun(cronSpec, time.Now()); err == nil {
-				nextMeta := metav1.NewTime(next)
-				st.NextScheduleTime = &nextMeta
-			}
-		}
-	}); err != nil {
-		log.Error(err, "recording run result")
+	run := cronopsv1alpha1.NewRunForJob(&job, cronopsv1alpha1.TriggerSchedule)
+	if err := r.Create(ctx, run); err != nil {
+		log.Error(err, "creating run object")
+		r.Recorder.Event(&job, "Warning", "RunCreateFailed", err.Error())
 	}
 }
 
-// patchStatus applies mutate to the freshest copy of the object's status,
-// retrying on optimistic-concurrency conflicts. No-op updates are skipped to
-// avoid reconcile feedback loops.
+// patchStatus applies mutate to the freshest copy of the job, retrying on
+// optimistic-concurrency conflicts. No-op updates are skipped to avoid
+// reconcile feedback loops. mutate receives the whole object so it can read
+// the spec, but must only change status.
 func (r *HttpCronJobReconciler) patchStatus(ctx context.Context, job *cronopsv1alpha1.HttpCronJob, mutate func(*cronopsv1alpha1.HttpCronJobStatus)) error {
-	key := client.ObjectKeyFromObject(job)
+	return patchJobStatus(ctx, r.Client, client.ObjectKeyFromObject(job), func(j *cronopsv1alpha1.HttpCronJob) {
+		mutate(&j.Status)
+	})
+}
+
+// patchJobStatus is the shared conflict-retrying status writer for jobs, used
+// by both reconcilers.
+func patchJobStatus(ctx context.Context, c client.Client, key types.NamespacedName, mutate func(*cronopsv1alpha1.HttpCronJob)) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var latest cronopsv1alpha1.HttpCronJob
-		if err := r.Get(ctx, key, &latest); err != nil {
+		if err := c.Get(ctx, key, &latest); err != nil {
 			if apierrors.IsNotFound(err) {
 				return nil
 			}
 			return err
 		}
 		before := *latest.Status.DeepCopy()
-		mutate(&latest.Status)
+		mutate(&latest)
 		if statusEqual(&before, &latest.Status) {
 			return nil
 		}
-		return r.Status().Update(ctx, &latest)
+		return c.Status().Update(ctx, &latest)
+	})
+}
+
+// recordJobRunResult publishes a finished run into the parent job's status:
+// lastRun, the bounded history ring and the recomputed next fire time.
+func recordJobRunResult(ctx context.Context, c client.Client, key types.NamespacedName, run cronopsv1alpha1.RunResult) error {
+	return patchJobStatus(ctx, c, key, func(job *cronopsv1alpha1.HttpCronJob) {
+		st := &job.Status
+		st.LastScheduleTime = &run.StartedAt
+		st.LastRun = &run
+		limit := int(job.HistoryLimitOrDefault())
+		st.History = append([]cronopsv1alpha1.RunResult{run}, st.History...)
+		if len(st.History) > limit {
+			st.History = st.History[:limit]
+		}
+		if cronSpec, err := scheduler.BuildCronSpec(job.Spec.Schedule, job.Spec.Timezone); err == nil {
+			if next, err := scheduler.NextRun(cronSpec, time.Now()); err == nil {
+				nextMeta := metav1.NewTime(next)
+				st.NextScheduleTime = &nextMeta
+			}
+		}
 	})
 }
 
@@ -224,6 +226,8 @@ func runEqual(a, b *cronopsv1alpha1.RunResult) bool {
 		a.Message == b.Message &&
 		a.DurationMs == b.DurationMs &&
 		a.ResponseBody == b.ResponseBody &&
+		a.Attempts == b.Attempts &&
+		a.Trigger == b.Trigger &&
 		a.StartedAt.Truncate(time.Second).Equal(b.StartedAt.Truncate(time.Second)) &&
 		timePtrEqual(a.FinishedAt, b.FinishedAt)
 }

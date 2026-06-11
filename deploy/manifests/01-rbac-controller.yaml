@@ -15,6 +15,13 @@ rules:
   - apiGroups: ["cronops.io"]
     resources: ["httpcronjobs/status"]
     verbs: ["get", "update", "patch"]
+  # Run objects: created on schedule, executed, pruned (count cap / TTL).
+  - apiGroups: ["cronops.io"]
+    resources: ["httpcronjobruns"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: ["cronops.io"]
+    resources: ["httpcronjobruns/status"]
+    verbs: ["get", "update", "patch"]
   # Read credentials referenced by spec.auth.secretRef in job namespaces.
   - apiGroups: [""]
     resources: ["secrets"]

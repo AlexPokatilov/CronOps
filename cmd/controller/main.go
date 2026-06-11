@@ -62,15 +62,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	//nolint:staticcheck // legacy events API kept until controller-runtime removes it
+	recorder := mgr.GetEventRecorderFor("cronops-controller")
+	tracker := controller.NewRunTracker()
+
 	reconciler := &controller.HttpCronJobReconciler{
-		Client: mgr.GetClient(),
-		//nolint:staticcheck // legacy events API kept until controller-runtime removes it
-		Recorder:  mgr.GetEventRecorderFor("cronops-controller"),
+		Client:    mgr.GetClient(),
+		Recorder:  recorder,
 		Scheduler: sched,
-		Executor:  executor.New(mgr.GetClient()),
+		Tracker:   tracker,
 	}
 	if err := reconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "HttpCronJob")
+		os.Exit(1)
+	}
+
+	runReconciler := &controller.HttpCronJobRunReconciler{
+		Client:   mgr.GetClient(),
+		Recorder: recorder,
+		Executor: executor.New(mgr.GetClient()),
+		Tracker:  tracker,
+	}
+	if err := runReconciler.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "HttpCronJobRun")
 		os.Exit(1)
 	}
 

@@ -1,4 +1,4 @@
-import type { JobView, HttpCronJobSpec, Stats } from "./types";
+import type { JobView, HttpCronJobSpec, Stats, RunView, ProjectView } from "./types";
 
 export class ApiError extends Error {
   status: number;
@@ -41,10 +41,13 @@ export const api = {
 
   stats: () => request<Stats>("/api/v1/stats"),
 
-  listJobs: (namespace?: string) =>
-    request<{ items: JobView[] }>(
-      "/api/v1/cronjobs" + (namespace ? `?namespace=${encodeURIComponent(namespace)}` : ""),
-    ),
+  listJobs: (namespace?: string, project?: string) => {
+    const params = new URLSearchParams();
+    if (namespace) params.set("namespace", namespace);
+    if (project) params.set("project", project);
+    const qs = params.toString();
+    return request<{ items: JobView[] }>("/api/v1/cronjobs" + (qs ? `?${qs}` : ""));
+  },
 
   getJob: (namespace: string, name: string) =>
     request<JobView>(`/api/v1/cronjobs/${namespace}/${name}`),
@@ -79,4 +82,22 @@ export const api = {
 
   deleteJob: (namespace: string, name: string) =>
     request<void>(`/api/v1/cronjobs/${namespace}/${name}`, { method: "DELETE" }),
+
+  runNow: (namespace: string, name: string) =>
+    request<RunView>(`/api/v1/cronjobs/${namespace}/${name}/run`, { method: "POST" }),
+
+  listRuns: (namespace: string, name: string) =>
+    request<{ items: RunView[] }>(`/api/v1/cronjobs/${namespace}/${name}/runs`),
+
+  listProjects: () => request<{ items: ProjectView[] }>("/api/v1/projects"),
+
+  createProject: (name: string, description: string) =>
+    request<ProjectView>("/api/v1/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, description }),
+    }),
+
+  deleteProject: (name: string) =>
+    request<void>(`/api/v1/projects/${encodeURIComponent(name)}`, { method: "DELETE" }),
 };

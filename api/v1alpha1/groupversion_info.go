@@ -21,7 +21,11 @@ var (
 )
 
 func addKnownTypes(s *runtime.Scheme) error {
-	s.AddKnownTypes(GroupVersion, &HttpCronJob{}, &HttpCronJobList{})
+	s.AddKnownTypes(GroupVersion,
+		&HttpCronJob{}, &HttpCronJobList{},
+		&HttpCronJobRun{}, &HttpCronJobRunList{},
+		&CronProject{}, &CronProjectList{},
+	)
 	metav1.AddToGroupVersion(s, GroupVersion)
 	return nil
 }

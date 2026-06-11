@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	cronopsv1alpha1 "github.com/AlexPokatilov/CronOps/api/v1alpha1"
@@ -222,6 +223,114 @@ func TestRunMissingSecret(t *testing.T) {
 	res := New(c).Run(context.Background(), job)
 	if res.Success {
 		t.Fatal("Run() succeeded, want auth resolution failure")
+	}
+}
+
+func TestRunRetriesUntilSuccess(t *testing.T) {
+	var calls int
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	job := baseJob(ts.URL)
+	job.Spec.Retry = &cronopsv1alpha1.RetrySpec{
+		MaxAttempts:    ptr.To(int32(3)),
+		BackoffSeconds: ptr.To(int32(1)),
+	}
+	e := New(fake.NewClientBuilder().WithScheme(newScheme(t)).Build())
+	res := e.Run(context.Background(), job)
+	if !res.Success {
+		t.Fatalf("Run() = %+v, want success after retries", res)
+	}
+	if res.Attempts != 3 || calls != 3 {
+		t.Fatalf("attempts = %d (calls %d), want 3", res.Attempts, calls)
+	}
+}
+
+func TestRunRetriesExhausted(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer ts.Close()
+
+	job := baseJob(ts.URL)
+	job.Spec.Retry = &cronopsv1alpha1.RetrySpec{
+		MaxAttempts:    ptr.To(int32(2)),
+		BackoffSeconds: ptr.To(int32(1)),
+	}
+	e := New(fake.NewClientBuilder().WithScheme(newScheme(t)).Build())
+	res := e.Run(context.Background(), job)
+	if res.Success || res.Attempts != 2 {
+		t.Fatalf("Run() = %+v, want failure after 2 attempts", res)
+	}
+}
+
+func TestRunBodyRegexCriteria(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`job finished: OK`))
+	}))
+	defer ts.Close()
+
+	e := New(fake.NewClientBuilder().WithScheme(newScheme(t)).Build())
+
+	job := baseJob(ts.URL)
+	job.Spec.SuccessCriteria = &cronopsv1alpha1.SuccessCriteriaSpec{BodyRegex: `finished: OK`}
+	if res := e.Run(context.Background(), job); !res.Success {
+		t.Fatalf("Run() = %+v, want success on matching regex", res)
+	}
+
+	job.Spec.SuccessCriteria = &cronopsv1alpha1.SuccessCriteriaSpec{BodyRegex: `finished: FAILED`}
+	if res := e.Run(context.Background(), job); res.Success {
+		t.Fatalf("Run() = %+v, want failure on non-matching regex", res)
+	}
+}
+
+func TestRunJSONPathCriteria(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"done","items":3}`))
+	}))
+	defer ts.Close()
+
+	e := New(fake.NewClientBuilder().WithScheme(newScheme(t)).Build())
+
+	job := baseJob(ts.URL)
+	job.Spec.SuccessCriteria = &cronopsv1alpha1.SuccessCriteriaSpec{JSONPath: ".status", Value: "done"}
+	if res := e.Run(context.Background(), job); !res.Success {
+		t.Fatalf("Run() = %+v, want success on matching jsonPath value", res)
+	}
+
+	job.Spec.SuccessCriteria = &cronopsv1alpha1.SuccessCriteriaSpec{JSONPath: "{.status}", Value: "pending"}
+	if res := e.Run(context.Background(), job); res.Success {
+		t.Fatalf("Run() = %+v, want failure on wrong jsonPath value", res)
+	}
+
+	job.Spec.SuccessCriteria = &cronopsv1alpha1.SuccessCriteriaSpec{JSONPath: ".missing"}
+	if res := e.Run(context.Background(), job); res.Success {
+		t.Fatalf("Run() = %+v, want failure on unresolved jsonPath", res)
+	}
+}
+
+func TestValidateCriteria(t *testing.T) {
+	if err := ValidateCriteria(nil); err != nil {
+		t.Errorf("nil criteria: %v", err)
+	}
+	if err := ValidateCriteria(&cronopsv1alpha1.SuccessCriteriaSpec{}); err == nil {
+		t.Error("empty criteria: want error")
+	}
+	if err := ValidateCriteria(&cronopsv1alpha1.SuccessCriteriaSpec{BodyRegex: "("}); err == nil {
+		t.Error("broken regex: want error")
+	}
+	if err := ValidateCriteria(&cronopsv1alpha1.SuccessCriteriaSpec{JSONPath: ".ok"}); err != nil {
+		t.Errorf("valid jsonPath: %v", err)
+	}
+	if err := ValidateCriteria(&cronopsv1alpha1.SuccessCriteriaSpec{Value: "x"}); err == nil {
+		t.Error("value without jsonPath: want error")
 	}
 }
 

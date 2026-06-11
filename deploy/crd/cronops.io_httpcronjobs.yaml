@@ -104,10 +104,12 @@ spec:
                 default: Forbid
                 description: |-
                   ConcurrencyPolicy controls what happens when a run fires while the
-                  previous one is still in progress.
+                  previous one is still in progress: Allow runs them in parallel,
+                  Forbid skips the new run, Replace cancels the old run first.
                 enum:
                 - Allow
                 - Forbid
+                - Replace
                 type: string
               endpoint:
                 description: Endpoint is the URL called on each run.
@@ -142,11 +144,73 @@ spec:
                 - DELETE
                 - HEAD
                 type: string
+              project:
+                description: |-
+                  Project assigns the job to a CronProject for grouping and filtering.
+                  Empty means the "default" project.
+                type: string
+              retry:
+                description: Retry re-runs failed attempts with exponential backoff.
+                properties:
+                  backoffSeconds:
+                    default: 10
+                    description: |-
+                      BackoffSeconds is the delay before the first retry; each subsequent
+                      retry doubles it (exponential backoff).
+                    format: int32
+                    maximum: 3600
+                    minimum: 1
+                    type: integer
+                  maxAttempts:
+                    default: 1
+                    description: |-
+                      MaxAttempts is the total number of attempts per run, including the
+                      first one. 1 means no retries.
+                    format: int32
+                    maximum: 10
+                    minimum: 1
+                    type: integer
+                type: object
+              runHistoryLimit:
+                default: 20
+                description: |-
+                  RunHistoryLimit caps the number of finished HttpCronJobRun objects
+                  kept per job; the oldest are deleted first.
+                format: int32
+                maximum: 200
+                minimum: 1
+                type: integer
+              runTTLSecondsAfterFinished:
+                description: |-
+                  RunTTLSecondsAfterFinished, when set, deletes finished
+                  HttpCronJobRun objects this many seconds after they complete.
+                format: int32
+                minimum: 60
+                type: integer
               schedule:
                 description: Schedule in standard 5-field cron syntax, e.g. "0 3 *
                   * *".
                 minLength: 1
                 type: string
+              successCriteria:
+                description: |-
+                  SuccessCriteria additionally validates the response body
+                  (regex and/or JSONPath) before a run counts as Success.
+                properties:
+                  bodyRegex:
+                    description: BodyRegex is an RE2 regular expression the response
+                      body must match.
+                    type: string
+                  jsonPath:
+                    description: |-
+                      JSONPath is a JSONPath expression (e.g. "{.status}" or ".status")
+                      evaluated against the JSON response body. Without Value the expression
+                      only needs to resolve to a non-empty result.
+                    type: string
+                  value:
+                    description: Value the JSONPath result must equal (string comparison).
+                    type: string
+                type: object
               successHttpCodes:
                 description: |-
                   SuccessHttpCodes lists response codes treated as success.
@@ -237,6 +301,11 @@ spec:
                 items:
                   description: RunResult records the outcome of a single run.
                   properties:
+                    attempts:
+                      description: Attempts is how many HTTP attempts the run took
+                        (retries included).
+                      format: int32
+                      type: integer
                     durationMs:
                       description: DurationMs is the wall-clock run time in milliseconds.
                       format: int64
@@ -262,6 +331,10 @@ spec:
                     startedAt:
                       format: date-time
                       type: string
+                    trigger:
+                      description: 'Trigger records what started the run: Schedule
+                        or Manual.'
+                      type: string
                   required:
                   - result
                   - startedAt
@@ -270,6 +343,11 @@ spec:
               lastRun:
                 description: RunResult records the outcome of a single run.
                 properties:
+                  attempts:
+                    description: Attempts is how many HTTP attempts the run took (retries
+                      included).
+                    format: int32
+                    type: integer
                   durationMs:
                     description: DurationMs is the wall-clock run time in milliseconds.
                     format: int64
@@ -294,6 +372,10 @@ spec:
                     type: string
                   startedAt:
                     format: date-time
+                    type: string
+                  trigger:
+                    description: 'Trigger records what started the run: Schedule or
+                      Manual.'
                     type: string
                 required:
                 - result

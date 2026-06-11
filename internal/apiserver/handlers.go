@@ -84,8 +84,12 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("listing cronjobs: %v", err))
 		return
 	}
+	project := r.URL.Query().Get("project")
 	views := make([]jobView, 0, len(list.Items))
 	for i := range list.Items {
+		if project != "" && list.Items[i].ProjectOrDefault() != project {
+			continue
+		}
 		views = append(views, toView(&list.Items[i]))
 	}
 	sort.Slice(views, func(i, j int) bool {

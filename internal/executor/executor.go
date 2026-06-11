@@ -3,15 +3,18 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/jsonpath"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	cronopsv1alpha1 "github.com/AlexPokatilov/CronOps/api/v1alpha1"
@@ -33,6 +36,8 @@ type Result struct {
 	// Body is a snippet of the response body, truncated to maxCaptureBytes
 	// (empty when capture is disabled in the spec).
 	Body string
+	// Attempts is how many HTTP attempts were made (retries included).
+	Attempts int32
 }
 
 // Executor builds and sends the HTTP request described by a HttpCronJob spec,
@@ -50,8 +55,31 @@ func New(c client.Client) *Executor {
 	}
 }
 
-// Run executes one HTTP call for the job and reports the outcome.
+// Run executes the HTTP call for the job, retrying failed attempts with
+// exponential backoff per spec.retry, and reports the final outcome.
 func (e *Executor) Run(ctx context.Context, job *cronopsv1alpha1.HttpCronJob) Result {
+	maxAttempts := job.MaxAttemptsOrDefault()
+	backoff := time.Duration(job.BackoffSecondsOrDefault()) * time.Second
+
+	var res Result
+	for attempt := int32(1); ; attempt++ {
+		res = e.attempt(ctx, job)
+		res.Attempts = attempt
+		if res.Success || attempt >= maxAttempts {
+			return res
+		}
+		select {
+		case <-ctx.Done():
+			res.Message += "; retries aborted: " + ctx.Err().Error()
+			return res
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+	}
+}
+
+// attempt performs a single HTTP call with the per-attempt timeout applied.
+func (e *Executor) attempt(ctx context.Context, job *cronopsv1alpha1.HttpCronJob) Result {
 	timeout := time.Duration(job.TimeoutOrDefault()) * time.Second
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -77,12 +105,20 @@ func (e *Executor) Run(ctx context.Context, job *cronopsv1alpha1.HttpCronJob) Re
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	// The body is needed in full (bounded) for success criteria; only a
+	// short snippet of it is ever stored in run history.
+	criteria := job.Spec.SuccessCriteria
+	readLimit := int64(maxCaptureBytes)
+	if criteria != nil {
+		readLimit = maxDrainBytes
+	}
+	captured, _ := io.ReadAll(io.LimitReader(resp.Body, readLimit))
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrainBytes))
+
 	var snippet string
 	if job.CaptureResponseBodyOrDefault() {
-		captured, _ := io.ReadAll(io.LimitReader(resp.Body, maxCaptureBytes))
-		snippet = string(captured)
+		snippet = string(captured[:min(len(captured), maxCaptureBytes)])
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrainBytes))
 
 	res := Result{
 		StatusCode: resp.StatusCode,
@@ -91,6 +127,11 @@ func (e *Executor) Run(ctx context.Context, job *cronopsv1alpha1.HttpCronJob) Re
 	}
 	if !res.Success {
 		res.Message = fmt.Sprintf("unexpected status %d", resp.StatusCode)
+		return res
+	}
+	if err := CheckBody(captured, criteria); err != nil {
+		res.Success = false
+		res.Message = err.Error()
 	}
 	return res
 }
@@ -169,6 +210,93 @@ func CodeMatches(code int, patterns []string) bool {
 		}
 	}
 	return false
+}
+
+// CheckBody evaluates the success criteria against the response body and
+// returns a descriptive error when any criterion fails.
+func CheckBody(body []byte, criteria *cronopsv1alpha1.SuccessCriteriaSpec) error {
+	if criteria == nil {
+		return nil
+	}
+	if criteria.BodyRegex != "" {
+		re, err := regexp.Compile(criteria.BodyRegex)
+		if err != nil {
+			return fmt.Errorf("invalid bodyRegex: %w", err)
+		}
+		if !re.Match(body) {
+			return fmt.Errorf("response body does not match bodyRegex %q", criteria.BodyRegex)
+		}
+	}
+	if criteria.JSONPath != "" {
+		got, err := evalJSONPath(body, criteria.JSONPath)
+		if err != nil {
+			return err
+		}
+		if criteria.Value != "" && got != criteria.Value {
+			return fmt.Errorf("jsonPath %s = %q, want %q", criteria.JSONPath, got, criteria.Value)
+		}
+	}
+	return nil
+}
+
+// evalJSONPath runs a kubectl-style JSONPath expression over a JSON body and
+// returns the result rendered as a string.
+func evalJSONPath(body []byte, expr string) (string, error) {
+	var doc any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return "", fmt.Errorf("response body is not valid JSON: %v", err)
+	}
+	jp := jsonpath.New("successCriteria")
+	if err := jp.Parse(normalizeJSONPath(expr)); err != nil {
+		return "", fmt.Errorf("invalid jsonPath %q: %v", expr, err)
+	}
+	var out strings.Builder
+	if err := jp.Execute(&out, doc); err != nil {
+		return "", fmt.Errorf("jsonPath %s did not match response body: %v", expr, err)
+	}
+	if out.Len() == 0 {
+		return "", fmt.Errorf("jsonPath %s resolved to an empty result", expr)
+	}
+	return out.String(), nil
+}
+
+// normalizeJSONPath lets users write ".status" or "$.status" instead of the
+// full "{.status}" template syntax.
+func normalizeJSONPath(expr string) string {
+	expr = strings.TrimSpace(expr)
+	if strings.HasPrefix(expr, "{") {
+		return expr
+	}
+	expr = strings.TrimPrefix(expr, "$")
+	if !strings.HasPrefix(expr, ".") && !strings.HasPrefix(expr, "[") {
+		expr = "." + expr
+	}
+	return "{" + expr + "}"
+}
+
+// ValidateCriteria checks spec.successCriteria without running a request, so
+// the reconciler can mark obviously broken specs as Invalid.
+func ValidateCriteria(criteria *cronopsv1alpha1.SuccessCriteriaSpec) error {
+	if criteria == nil {
+		return nil
+	}
+	if criteria.BodyRegex == "" && criteria.JSONPath == "" {
+		return fmt.Errorf("successCriteria requires bodyRegex or jsonPath")
+	}
+	if criteria.BodyRegex != "" {
+		if _, err := regexp.Compile(criteria.BodyRegex); err != nil {
+			return fmt.Errorf("invalid successCriteria.bodyRegex: %v", err)
+		}
+	}
+	if criteria.JSONPath != "" {
+		if err := jsonpath.New("successCriteria").Parse(normalizeJSONPath(criteria.JSONPath)); err != nil {
+			return fmt.Errorf("invalid successCriteria.jsonPath: %v", err)
+		}
+	}
+	if criteria.Value != "" && criteria.JSONPath == "" {
+		return fmt.Errorf("successCriteria.value requires jsonPath")
+	}
+	return nil
 }
 
 // ValidateAuth checks the auth section without touching the cluster, so the

@@ -2,14 +2,16 @@ import { Fragment, useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { stringify } from "yaml";
 import { api } from "../api";
-import type { JobView } from "../types";
+import type { JobView, RunView } from "../types";
 import { PhaseBadge, ResultBadge, formatTime } from "../components/badges";
 
 export function CronJobDetailPage() {
   const { namespace = "", name = "" } = useParams();
   const [job, setJob] = useState<JobView | null>(null);
+  const [runs, setRuns] = useState<RunView[]>([]);
   const [error, setError] = useState("");
-  const [expandedRun, setExpandedRun] = useState<number | null>(null);
+  const [notice, setNotice] = useState("");
+  const [expandedRun, setExpandedRun] = useState<string | null>(null);
   const navigate = useNavigate();
 
   const load = useCallback(() => {
@@ -17,6 +19,10 @@ export function CronJobDetailPage() {
       .getJob(namespace, name)
       .then(setJob)
       .catch((e) => setError(String(e.message ?? e)));
+    api
+      .listRuns(namespace, name)
+      .then((r) => setRuns(r.items))
+      .catch(() => {});
   }, [namespace, name]);
 
   useEffect(() => {
@@ -30,6 +36,17 @@ export function CronJobDetailPage() {
     try {
       await api.suspendJob(namespace, name, !job.spec.suspend);
       load();
+    } catch (e) {
+      setError(String((e as Error).message ?? e));
+    }
+  };
+
+  const runNow = async () => {
+    try {
+      const run = await api.runNow(namespace, name);
+      setNotice(`Run ${run.name} triggered.`);
+      setTimeout(() => setNotice(""), 5000);
+      setTimeout(load, 1500);
     } catch (e) {
       setError(String((e as Error).message ?? e));
     }
@@ -63,6 +80,7 @@ export function CronJobDetailPage() {
           {job.name} <PhaseBadge phase={job.status.phase} />
         </h1>
         <div className="actions" style={{ marginTop: 0 }}>
+          <button onClick={runNow}>Run now</button>
           <button className="secondary" onClick={toggleSuspend}>
             {job.spec.suspend ? "Resume" : "Suspend"}
           </button>
@@ -71,11 +89,14 @@ export function CronJobDetailPage() {
           </button>
         </div>
       </div>
+      {notice && <div className="info-box">{notice}</div>}
 
       <div className="row" style={{ alignItems: "flex-start" }}>
         <div className="panel" style={{ marginTop: 0 }}>
           <h2 style={{ marginTop: 0 }}>Summary</h2>
           <dl className="detail-grid">
+            <dt>Project</dt>
+            <dd>{job.spec.project || "default"}</dd>
             <dt>Schedule</dt>
             <dd className="mono">
               {job.spec.schedule}
@@ -91,6 +112,22 @@ export function CronJobDetailPage() {
             <dd>{job.spec.concurrencyPolicy ?? "Forbid"}</dd>
             <dt>Timeout</dt>
             <dd>{job.spec.timeoutSeconds ?? 30}s</dd>
+            <dt>Retry</dt>
+            <dd>
+              {job.spec.retry?.maxAttempts && job.spec.retry.maxAttempts > 1
+                ? `${job.spec.retry.maxAttempts} attempts, backoff ${job.spec.retry.backoffSeconds ?? 10}s`
+                : "off"}
+            </dd>
+            {job.spec.successCriteria && (
+              <>
+                <dt>Body criteria</dt>
+                <dd className="mono">
+                  {job.spec.successCriteria.bodyRegex
+                    ? `regex: ${job.spec.successCriteria.bodyRegex}`
+                    : `${job.spec.successCriteria.jsonPath}${job.spec.successCriteria.value ? ` == ${job.spec.successCriteria.value}` : ""}`}
+                </dd>
+              </>
+            )}
             <dt>Last scheduled</dt>
             <dd>{formatTime(job.status.lastScheduleTime)}</dd>
             <dt>Next run</dt>
@@ -113,14 +150,17 @@ export function CronJobDetailPage() {
 
       <div className="panel">
         <h2 style={{ marginTop: 0 }}>Run history</h2>
-        {!job.status.history || job.status.history.length === 0 ? (
+        {runs.length === 0 ? (
           <div className="empty">No runs recorded yet.</div>
         ) : (
           <table>
             <thead>
               <tr>
+                <th>Run</th>
                 <th>Started</th>
+                <th>Trigger</th>
                 <th>Duration</th>
+                <th>Attempts</th>
                 <th>Result</th>
                 <th>HTTP</th>
                 <th>Message</th>
@@ -128,26 +168,35 @@ export function CronJobDetailPage() {
               </tr>
             </thead>
             <tbody>
-              {job.status.history.map((run, i) => (
-                <Fragment key={i}>
+              {runs.map((run) => (
+                <Fragment key={run.name}>
                   <tr
                     className="run-row"
-                    onClick={() => setExpandedRun(expandedRun === i ? null : i)}
+                    onClick={() => setExpandedRun(expandedRun === run.name ? null : run.name)}
                   >
-                    <td>{formatTime(run.startedAt)}</td>
+                    <td className="mono dim">{run.name}</td>
+                    <td>{formatTime(run.startedAt ?? run.createdAt)}</td>
+                    <td className="dim">{run.trigger}</td>
                     <td className="dim">
-                      {run.durationMs != null ? `${run.durationMs} ms` : "—"}
+                      {run.durationMs != null && run.durationMs > 0 ? `${run.durationMs} ms` : "—"}
                     </td>
+                    <td className="dim">{run.attempts || "—"}</td>
                     <td>
-                      <ResultBadge result={run.result} />
+                      {run.phase === "Succeeded" ? (
+                        <ResultBadge result="Success" />
+                      ) : run.phase === "Failed" ? (
+                        <ResultBadge result="Failed" />
+                      ) : (
+                        <span className="badge">{run.phase}</span>
+                      )}
                     </td>
                     <td className="mono">{run.httpStatusCode || "—"}</td>
                     <td className="dim">{run.message || ""}</td>
-                    <td className="dim expand-hint">{expandedRun === i ? "▲" : "▼"}</td>
+                    <td className="dim expand-hint">{expandedRun === run.name ? "▲" : "▼"}</td>
                   </tr>
-                  {expandedRun === i && (
+                  {expandedRun === run.name && (
                     <tr className="run-detail">
-                      <td colSpan={6}>
+                      <td colSpan={9}>
                         {run.message && (
                           <div className="run-detail-block">
                             <div className="dim">Message</div>

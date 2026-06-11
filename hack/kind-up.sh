@@ -14,7 +14,7 @@ if ! kind get clusters | grep -qx "${CLUSTER_NAME}"; then
   kind create cluster --name "${CLUSTER_NAME}"
 fi
 
-kubectl apply -f "${REPO_ROOT}/deploy/crd/cronops.io_httpcronjobs.yaml"
+kubectl apply -f "${REPO_ROOT}/deploy/crd/"
 
 echo
 echo "Cluster '${CLUSTER_NAME}' is ready. Next steps:"

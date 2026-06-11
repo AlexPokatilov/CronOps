@@ -27,9 +27,22 @@ const (
 
 // Concurrency policies.
 const (
-	ConcurrencyAllow  = "Allow"
-	ConcurrencyForbid = "Forbid"
+	ConcurrencyAllow   = "Allow"
+	ConcurrencyForbid  = "Forbid"
+	ConcurrencyReplace = "Replace"
 )
+
+// Run triggers recorded on HttpCronJobRun resources.
+const (
+	TriggerSchedule = "Schedule"
+	TriggerManual   = "Manual"
+)
+
+// DefaultProject is the implicit project for jobs with no spec.project.
+const DefaultProject = "default"
+
+// LabelCronJob on a HttpCronJobRun points at the owning HttpCronJob name.
+const LabelCronJob = "cronops.io/cronjob"
 
 // ConditionScheduled reports whether the job is registered in the scheduler.
 const ConditionScheduled = "Scheduled"
@@ -59,6 +72,43 @@ type AuthSpec struct {
 	// HeaderName carries the api key for type=apiKey. Defaults to "X-API-Key".
 	// +optional
 	HeaderName string `json:"headerName,omitempty"`
+}
+
+// RetrySpec controls retries of failed runs.
+type RetrySpec struct {
+	// MaxAttempts is the total number of attempts per run, including the
+	// first one. 1 means no retries.
+	// +kubebuilder:default=1
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=10
+	// +optional
+	MaxAttempts *int32 `json:"maxAttempts,omitempty"`
+
+	// BackoffSeconds is the delay before the first retry; each subsequent
+	// retry doubles it (exponential backoff).
+	// +kubebuilder:default=10
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=3600
+	// +optional
+	BackoffSeconds *int32 `json:"backoffSeconds,omitempty"`
+}
+
+// SuccessCriteriaSpec validates the response body in addition to the HTTP
+// status code. All set criteria must pass for the run to count as Success.
+type SuccessCriteriaSpec struct {
+	// BodyRegex is an RE2 regular expression the response body must match.
+	// +optional
+	BodyRegex string `json:"bodyRegex,omitempty"`
+
+	// JSONPath is a JSONPath expression (e.g. "{.status}" or ".status")
+	// evaluated against the JSON response body. Without Value the expression
+	// only needs to resolve to a non-empty result.
+	// +optional
+	JSONPath string `json:"jsonPath,omitempty"`
+
+	// Value the JSONPath result must equal (string comparison).
+	// +optional
+	Value string `json:"value,omitempty"`
 }
 
 // HttpCronJobSpec defines the desired state of HttpCronJob.
@@ -103,9 +153,24 @@ type HttpCronJobSpec struct {
 	// +optional
 	SuccessHTTPCodes []string `json:"successHttpCodes,omitempty"`
 
+	// SuccessCriteria additionally validates the response body
+	// (regex and/or JSONPath) before a run counts as Success.
+	// +optional
+	SuccessCriteria *SuccessCriteriaSpec `json:"successCriteria,omitempty"`
+
+	// Retry re-runs failed attempts with exponential backoff.
+	// +optional
+	Retry *RetrySpec `json:"retry,omitempty"`
+
+	// Project assigns the job to a CronProject for grouping and filtering.
+	// Empty means the "default" project.
+	// +optional
+	Project string `json:"project,omitempty"`
+
 	// ConcurrencyPolicy controls what happens when a run fires while the
-	// previous one is still in progress.
-	// +kubebuilder:validation:Enum=Allow;Forbid
+	// previous one is still in progress: Allow runs them in parallel,
+	// Forbid skips the new run, Replace cancels the old run first.
+	// +kubebuilder:validation:Enum=Allow;Forbid;Replace
 	// +kubebuilder:default=Forbid
 	// +optional
 	ConcurrencyPolicy string `json:"concurrencyPolicy,omitempty"`
@@ -116,6 +181,20 @@ type HttpCronJobSpec struct {
 	// +kubebuilder:validation:Maximum=50
 	// +optional
 	HistoryLimit *int32 `json:"historyLimit,omitempty"`
+
+	// RunHistoryLimit caps the number of finished HttpCronJobRun objects
+	// kept per job; the oldest are deleted first.
+	// +kubebuilder:default=20
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=200
+	// +optional
+	RunHistoryLimit *int32 `json:"runHistoryLimit,omitempty"`
+
+	// RunTTLSecondsAfterFinished, when set, deletes finished
+	// HttpCronJobRun objects this many seconds after they complete.
+	// +kubebuilder:validation:Minimum=60
+	// +optional
+	RunTTLSecondsAfterFinished *int32 `json:"runTTLSecondsAfterFinished,omitempty"`
 
 	// CaptureResponseBody stores a truncated snippet (first 2 KiB) of each
 	// response body in run history so it can be inspected in the UI.
@@ -143,6 +222,12 @@ type RunResult struct {
 	// (see spec.captureResponseBody).
 	// +optional
 	ResponseBody string `json:"responseBody,omitempty"`
+	// Attempts is how many HTTP attempts the run took (retries included).
+	// +optional
+	Attempts int32 `json:"attempts,omitempty"`
+	// Trigger records what started the run: Schedule or Manual.
+	// +optional
+	Trigger string `json:"trigger,omitempty"`
 }
 
 // HttpCronJobStatus defines the observed state of HttpCronJob.
@@ -219,4 +304,39 @@ func (j *HttpCronJob) CaptureResponseBodyOrDefault() bool {
 		return *j.Spec.CaptureResponseBody
 	}
 	return true
+}
+
+// RunHistoryLimitOrDefault returns spec.runHistoryLimit with the API default
+// applied.
+func (j *HttpCronJob) RunHistoryLimitOrDefault() int32 {
+	if j.Spec.RunHistoryLimit != nil {
+		return *j.Spec.RunHistoryLimit
+	}
+	return 20
+}
+
+// MaxAttemptsOrDefault returns spec.retry.maxAttempts with the API default
+// applied.
+func (j *HttpCronJob) MaxAttemptsOrDefault() int32 {
+	if j.Spec.Retry != nil && j.Spec.Retry.MaxAttempts != nil {
+		return *j.Spec.Retry.MaxAttempts
+	}
+	return 1
+}
+
+// BackoffSecondsOrDefault returns spec.retry.backoffSeconds with the API
+// default applied.
+func (j *HttpCronJob) BackoffSecondsOrDefault() int32 {
+	if j.Spec.Retry != nil && j.Spec.Retry.BackoffSeconds != nil {
+		return *j.Spec.Retry.BackoffSeconds
+	}
+	return 10
+}
+
+// ProjectOrDefault returns spec.project, falling back to the default project.
+func (j *HttpCronJob) ProjectOrDefault() string {
+	if j.Spec.Project != "" {
+		return j.Spec.Project
+	}
+	return DefaultProject
 }

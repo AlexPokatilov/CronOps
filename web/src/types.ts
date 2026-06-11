@@ -14,6 +14,17 @@ export interface AuthSpec {
   headerName?: string;
 }
 
+export interface RetrySpec {
+  maxAttempts?: number;
+  backoffSeconds?: number;
+}
+
+export interface SuccessCriteriaSpec {
+  bodyRegex?: string;
+  jsonPath?: string;
+  value?: string;
+}
+
 export interface HttpCronJobSpec {
   schedule: string;
   endpoint: string;
@@ -25,8 +36,13 @@ export interface HttpCronJobSpec {
   body?: string;
   timeoutSeconds?: number;
   successHttpCodes?: string[];
-  concurrencyPolicy?: "Allow" | "Forbid";
+  successCriteria?: SuccessCriteriaSpec;
+  retry?: RetrySpec;
+  project?: string;
+  concurrencyPolicy?: "Allow" | "Forbid" | "Replace";
   historyLimit?: number;
+  runHistoryLimit?: number;
+  runTTLSecondsAfterFinished?: number;
   captureResponseBody?: boolean;
 }
 
@@ -38,6 +54,31 @@ export interface RunResult {
   message?: string;
   durationMs?: number;
   responseBody?: string;
+  attempts?: number;
+  trigger?: "Schedule" | "Manual";
+}
+
+export interface RunView {
+  name: string;
+  namespace: string;
+  jobName: string;
+  trigger: "Schedule" | "Manual";
+  phase: "Pending" | "Running" | "Succeeded" | "Failed";
+  startedAt?: string;
+  finishedAt?: string;
+  httpStatusCode?: number;
+  message?: string;
+  durationMs?: number;
+  responseBody?: string;
+  attempts?: number;
+  createdAt: string;
+}
+
+export interface ProjectView {
+  name: string;
+  description?: string;
+  jobCount: number;
+  createdAt?: string;
 }
 
 export interface Condition {

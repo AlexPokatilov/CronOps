@@ -2,7 +2,7 @@
 
 **Kubernetes-native cronjob manager для HTTP-викликів.** GitOps-first підхід за зразком ArgoCD: усі об'єкти системи — це CRD, а Kubernetes API (etcd) виступає одночасно джерелом правди та базою даних. Жодної зовнішньої БД.
 
-> Статус: ✅ MVP (v0.1) реалізовано — контролер, REST API, Web UI, Helm chart. Див. [чекліст MVP](#mvp--обсяг-робіт) та [Roadmap](#roadmap).
+> Статус: ✅ v0.2 реалізовано — контролер, REST API, Web UI, Helm chart; Run-об'єкти, ретраї, run-now, критерії успіху по тілу, проєкти. Див. [чекліст MVP](#mvp--обсяг-робіт) та [Roadmap](#roadmap).
 
 ---
 
@@ -158,13 +158,21 @@ spec:
     # для apiKey додатково: headerName: X-API-Key
   body: |
     {"period": "daily", "format": "pdf"}
-  timeoutSeconds: 30              # default: 30
-  successHttpCodes: ["2xx"]       # критерій успіху, default: 2xx
-  retry:
-    attempts: 0                   # default: 0 (без ретраїв у MVP)
-    backoffSeconds: 10
-  concurrencyPolicy: Forbid       # Allow|Forbid (default: Forbid)
+  timeoutSeconds: 30              # default: 30 (на кожну спробу)
+  successHttpCodes: ["2xx"]       # критерій успіху за кодом, default: 2xx
+  successCriteria:                # додаткова перевірка тіла відповіді (v0.2)
+    jsonPath: ".status"           # JSONPath по JSON-тілу ("{.status}" теж приймається)
+    value: "queued"               # очікуване значення; без value — достатньо існування
+    # bodyRegex: "finished: OK"   # та/або RE2-regex по сирому тілу
+  retry:                          # ретраї невдалих спроб (v0.2)
+    maxAttempts: 3                # всього спроб, включно з першою (default: 1)
+    backoffSeconds: 10            # пауза перед ретраєм, подвоюється щоразу (default: 10)
+  project: billing                # CronProject для групування (default: "default", v0.2)
+  concurrencyPolicy: Forbid       # Allow|Forbid|Replace (default: Forbid)
+                                  # Replace скасовує попередній запуск і стартує новий
   historyLimit: 10                # скільки останніх запусків тримати в status
+  runHistoryLimit: 20             # скільки HttpCronJobRun-об'єктів зберігати (v0.2)
+  runTTLSecondsAfterFinished: 86400  # TTL завершених Run-об'єктів (опційно, v0.2)
   captureResponseBody: true       # зберігати фрагмент відповіді (2 КіБ) в історії;
                                   # вимкніть для чутливих відповідей (default: true)
 
@@ -180,6 +188,8 @@ status:                           # заповнює контролер (status 
     httpStatusCode: 200
     durationMs: 1840
     responseBody: '{"report":"queued"}'   # обрізаний до 2 КіБ фрагмент
+    attempts: 1                   # скільки HTTP-спроб зайняв запуск (v0.2)
+    trigger: Schedule             # Schedule|Manual (v0.2)
     message: ""
   history:                        # кільцевий буфер останніх historyLimit запусків
     - startedAt: "..."
@@ -196,8 +206,24 @@ status:                           # заповнює контролер (status 
 
 - **Секрети не в spec.** Паролі/токени посилаються через `secretRef` на стандартний K8s Secret — маніфест безпечно тримати в Git (GitOps-ready).
 - **`status` subresource** — контролер пише тільки в status, користувачі/server — тільки в spec; розділення прав на рівні RBAC.
-- **Історія запусків у `status.history`** з лімітом — достатньо для dashboard-статистики MVP без окремої БД. Окремий CRD `HttpCronJobRun` для повної історії — у Roadmap.
+- **Історія запусків у `status.history`** з лімітом — швидкий доступ для dashboard без окремої БД.
 - **OpenAPI-валідація** у CRD-схемі (enum для method/auth.type, pattern для schedule) + докладніша валідація в контролері з виставленням `phase: Invalid`.
+
+### CRD: HttpCronJobRun (v0.2)
+
+`kind: HttpCronJobRun`, namespaced, скорочення `hcjr` — окремий об'єкт на кожен запуск:
+
+- **Повна історія** запусків, що переживає кільцевий буфер `status.history`; читається через `kubectl get hcjr` або UI.
+- **Механізм run-now**: server створює Run із `spec.trigger: Manual`, контролер його виконує — той самий шлях, що й для запусків за розкладом. Виконання завжди лишається за контролером.
+- `spec`: `jobName`, `trigger` (Schedule|Manual). `status`: `phase` (Running|Succeeded|Failed), `startedAt/finishedAt`, `httpStatusCode`, `durationMs`, `responseBody`, `attempts`, `message`.
+- **Прибирання**: ownerReference (видалення задачі видаляє її Run-и), ліміт кількості `spec.runHistoryLimit` (default 20) і опційний TTL `spec.runTTLSecondsAfterFinished`.
+
+### CRD: CronProject (v0.2)
+
+`kind: CronProject`, cluster-scoped, скорочення `cproj` — поділ задач на проєкти (як AppProject в ArgoCD):
+
+- Задача приєднується через `spec.project`; порожнє значення = проєкт `default`.
+- У v0.2 проєкти — групування та фільтрація в UI/API; обмеження namespace'ів/доменів на проєкт — план v0.3.
 
 ### Controller та reconciliation loop
 
@@ -218,7 +244,9 @@ flowchart TD
 - **Edge + level triggered**: реагуємо на події, але периодичний resync (informer cache) гарантує самовідновлення після збоїв.
 - **Відновлення після рестарту**: scheduler — лише кеш; перезапуск контролера повністю відбудовує його з etcd (list + watch).
 - **Один активний виконавець**: leader election через `coordination.k8s.io/Lease`.
-- `concurrencyPolicy: Forbid` — якщо попередній запуск ще триває, новий пропускається з Event'ом.
+- `concurrencyPolicy`: `Forbid` — запуск пропускається з Event'ом, поки триває попередній; `Replace` — попередній скасовується (context cancel), стартує новий; `Allow` — паралельно.
+- **Ретраї**: невдалі спроби повторюються до `retry.maxAttempts` з експоненційним backoff; кількість спроб записується в результат запуску.
+- Запуск виконується через об'єкт `HttpCronJobRun`: cron-тік (або run-now) створює Run, окремий reconciler виконує HTTP-виклик у goroutine і пише результат у Run та в `status` задачі.
 
 ### API Server
 
@@ -239,9 +267,8 @@ React SPA, сторінки MVP:
 | `/dashboard` | Лічильники: всього задач, активні/призупинені/невалідні; статистика останніх запусків (success/failed/suspended); список останніх подій |
 | `/cronjobs` | Таблиця всіх задач: name, namespace, schedule, last run, next run, phase; дії: suspend/resume, delete |
 | `/cronjobs/new` | Створення: **(а)** форма з полями (обов'язкові: name, schedule, endpoint, method; необов'язкові: headers, auth, body, timezone, …) з live-прев'ю згенерованого YAML, **(б)** вкладка «YAML» з Monaco-редактором для вставки готового маніфеста |
-| `/cronjobs/:ns/:name` | Деталі задачі: spec, історія запусків, events, кнопки edit/suspend/run-now\* |
-
-\* «run-now» — тригер позачергового запуску, кандидат на MVP+.
+| `/cronjobs/:ns/:name` | Деталі задачі: spec, історія запусків (Run-об'єкти: trigger, attempts, тіло відповіді), кнопки run-now/suspend/delete |
+| `/projects` | Проєкти (v0.2): список із кількістю задач, створення/видалення, перехід до відфільтрованого списку задач |
 
 ### Авторизація
 
@@ -276,12 +303,17 @@ LDAP та SSO/OIDC (Dex, як в ArgoCD) — у Roadmap (v0.3). До зовні�
 | POST | `/auth/logout` | Інвалідація cookie |
 | GET | `/me` | Поточний користувач |
 | GET | `/stats` | Агрегати для dashboard (total/active/suspended/invalid, last runs success/failed) |
-| GET | `/cronjobs?namespace=` | Список задач |
+| GET | `/cronjobs?namespace=&project=` | Список задач (фільтри необов'язкові) |
 | POST | `/cronjobs` | Створити (JSON-поля або `Content-Type: application/yaml` з маніфестом) |
 | GET | `/cronjobs/{ns}/{name}` | Деталі (spec + status + history) |
 | PUT | `/cronjobs/{ns}/{name}` | Оновити |
 | PATCH | `/cronjobs/{ns}/{name}/suspend` | `{"suspend": true|false}` |
 | DELETE | `/cronjobs/{ns}/{name}` | Видалити |
+| POST | `/cronjobs/{ns}/{name}/run` | Run-now: створює `HttpCronJobRun` із `trigger: Manual` (v0.2) |
+| GET | `/cronjobs/{ns}/{name}/runs` | Повна історія запусків — Run-об'єкти, найновіші перші (v0.2) |
+| GET | `/projects` | Список проєктів із кількістю задач (v0.2) |
+| POST | `/projects` | Створити проєкт `{"name", "description"}` (v0.2) |
+| DELETE | `/projects/{name}` | Видалити проєкт (default — неможливо) (v0.2) |
 | GET | `/healthz`, `/readyz` | Проби |
 
 ---
@@ -451,15 +483,15 @@ CronOps/
 
 ## Roadmap
 
-### v0.1 — MVP *(поточна ціль)*
+### v0.1 — MVP ✅ *(реалізовано)*
 Усе з розділу [MVP](#mvp--обсяг-робіт).
 
-### v0.2 — Надійність запусків
-- CRD `HttpCronJobRun` — окремий ресурс на кожен запуск: повна історія, TTL-очистка (замість обмеженого `status.history`)
-- Retry-політика (attempts + backoff), `concurrencyPolicy: Replace`
-- Кнопка/ендпоінт **run-now** (позачерговий запуск)
-- Перевірка тіла відповіді (jsonpath/regex-критерії успіху, не лише HTTP-код)
-- CRD `CronProject` — поділ cron-задач на проєкти: `HttpCronJob.spec.project` посилається на проєкт, групування та фільтрація за проєктами в UI та API
+### v0.2 — Надійність запусків ✅ *(реалізовано)*
+- [x] CRD `HttpCronJobRun` — окремий ресурс на кожен запуск: повна історія, ліміт кількості (`runHistoryLimit`) + TTL-очистка (`runTTLSecondsAfterFinished`)
+- [x] Retry-політика (`retry.maxAttempts` + exponential backoff), `concurrencyPolicy: Replace`
+- [x] Кнопка/ендпоінт **run-now** (позачерговий запуск через Manual Run-об'єкт)
+- [x] Перевірка тіла відповіді (`successCriteria`: jsonPath/regex, не лише HTTP-код)
+- [x] CRD `CronProject` — поділ cron-задач на проєкти: `HttpCronJob.spec.project` посилається на проєкт, групування та фільтрація за проєктами в UI та API
 
 ### v0.3 — Користувачі та доступ
 - LDAP-авторизація (Active Directory / OpenLDAP): bind-перевірка пароля, мапінг LDAP-груп на ролі

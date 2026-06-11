@@ -22,7 +22,7 @@ vet:
 generate: $(CONTROLLER_GEN) ## Regenerate deepcopy code and the CRD manifest
 	$(CONTROLLER_GEN) object paths=./api/...
 	$(CONTROLLER_GEN) crd paths=./... output:crd:artifacts:config=deploy/crd
-	cp deploy/crd/cronops.io_httpcronjobs.yaml deploy/chart/crds/
+	cp deploy/crd/*.yaml deploy/chart/crds/
 
 $(CONTROLLER_GEN):
 	go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest

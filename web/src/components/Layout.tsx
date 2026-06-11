@@ -22,6 +22,7 @@ export function Layout() {
             CronJobs
           </NavLink>
           <NavLink to="/cronjobs/new">New CronJob</NavLink>
+          <NavLink to="/projects">Projects</NavLink>
         </nav>
         <div className="spacer" />
         <div className="user">

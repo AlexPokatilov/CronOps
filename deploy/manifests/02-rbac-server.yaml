@@ -16,6 +16,14 @@ rules:
   - apiGroups: ["cronops.io"]
     resources: ["httpcronjobs/status"]
     verbs: ["get"]
+  # Run history (read) and run-now (create); execution stays with the controller.
+  - apiGroups: ["cronops.io"]
+    resources: ["httpcronjobruns"]
+    verbs: ["get", "list", "watch", "create"]
+  # Project management from the UI.
+  - apiGroups: ["cronops.io"]
+    resources: ["cronprojects"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

@@ -1,8 +1,8 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { stringify } from "yaml";
 import { api } from "../api";
-import type { AuthSpec, HeaderSpec, HttpCronJobSpec } from "../types";
+import type { AuthSpec, HeaderSpec, HttpCronJobSpec, ProjectView } from "../types";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"] as const;
 const AUTH_TYPES = ["none", "basic", "bearer", "apiKey"] as const;
@@ -26,20 +26,36 @@ spec:
   #     name: my-token-secret
   # body: '{"hello": "world"}'
   # timeoutSeconds: 30
-  # concurrencyPolicy: Forbid
+  # concurrencyPolicy: Forbid   # Allow | Forbid | Replace
+  # project: payments
+  # retry:
+  #   maxAttempts: 3
+  #   backoffSeconds: 10
+  # successCriteria:
+  #   jsonPath: ".status"
+  #   value: "done"
+  #   # bodyRegex: "finished: OK"
+  # runHistoryLimit: 20
+  # runTTLSecondsAfterFinished: 86400
 `;
 
 interface FormState {
   name: string;
   namespace: string;
+  project: string;
   schedule: string;
   endpoint: string;
   method: (typeof METHODS)[number];
   timezone: string;
   body: string;
   timeoutSeconds: string;
-  concurrencyPolicy: "Forbid" | "Allow";
+  concurrencyPolicy: "Forbid" | "Allow" | "Replace";
   historyLimit: string;
+  retryMaxAttempts: string;
+  retryBackoffSeconds: string;
+  criteriaBodyRegex: string;
+  criteriaJsonPath: string;
+  criteriaValue: string;
   authType: (typeof AUTH_TYPES)[number];
   authSecretName: string;
   authSecretKey: string;
@@ -51,6 +67,7 @@ interface FormState {
 const initialForm: FormState = {
   name: "",
   namespace: "default",
+  project: "",
   schedule: "",
   endpoint: "",
   method: "GET",
@@ -59,6 +76,11 @@ const initialForm: FormState = {
   timeoutSeconds: "",
   concurrencyPolicy: "Forbid",
   historyLimit: "",
+  retryMaxAttempts: "",
+  retryBackoffSeconds: "",
+  criteriaBodyRegex: "",
+  criteriaJsonPath: "",
+  criteriaValue: "",
   authType: "none",
   authSecretName: "",
   authSecretKey: "",
@@ -74,11 +96,24 @@ function buildSpec(f: FormState): HttpCronJobSpec {
     method: f.method,
   };
   if (f.timezone) spec.timezone = f.timezone;
+  if (f.project) spec.project = f.project;
   if (f.body) spec.body = f.body;
   if (f.timeoutSeconds) spec.timeoutSeconds = Number(f.timeoutSeconds);
   if (f.historyLimit) spec.historyLimit = Number(f.historyLimit);
   if (f.concurrencyPolicy !== "Forbid") spec.concurrencyPolicy = f.concurrencyPolicy;
   if (!f.captureResponseBody) spec.captureResponseBody = false;
+  if (f.retryMaxAttempts && Number(f.retryMaxAttempts) > 1) {
+    spec.retry = { maxAttempts: Number(f.retryMaxAttempts) };
+    if (f.retryBackoffSeconds) spec.retry.backoffSeconds = Number(f.retryBackoffSeconds);
+  }
+  if (f.criteriaBodyRegex || f.criteriaJsonPath) {
+    spec.successCriteria = {};
+    if (f.criteriaBodyRegex) spec.successCriteria.bodyRegex = f.criteriaBodyRegex;
+    if (f.criteriaJsonPath) {
+      spec.successCriteria.jsonPath = f.criteriaJsonPath;
+      if (f.criteriaValue) spec.successCriteria.value = f.criteriaValue;
+    }
+  }
   const headers = f.headers.filter((h) => h.name);
   if (headers.length > 0) spec.headers = headers;
   if (f.authType !== "none") {
@@ -93,10 +128,18 @@ function buildSpec(f: FormState): HttpCronJobSpec {
 export function CronJobNewPage() {
   const [tab, setTab] = useState<"form" | "yaml">("form");
   const [form, setForm] = useState<FormState>(initialForm);
+  const [projects, setProjects] = useState<ProjectView[]>([]);
   const [manifest, setManifest] = useState(YAML_TEMPLATE);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    api
+      .listProjects()
+      .then((res) => setProjects(res.items))
+      .catch(() => {});
+  }, []);
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((f) => ({ ...f, [key]: value }));
@@ -185,6 +228,19 @@ export function CronJobNewPage() {
                   onChange={(e) => set("namespace", e.target.value)}
                   placeholder="default"
                 />
+              </div>
+              <div className="field">
+                <label>Project</label>
+                <select value={form.project} onChange={(e) => set("project", e.target.value)}>
+                  <option value="">default</option>
+                  {projects
+                    .filter((p) => p.name !== "default")
+                    .map((p) => (
+                      <option key={p.name} value={p.name}>
+                        {p.name}
+                      </option>
+                    ))}
+                </select>
               </div>
             </div>
             <div className="row">
@@ -350,6 +406,7 @@ export function CronJobNewPage() {
                 >
                   <option>Forbid</option>
                   <option>Allow</option>
+                  <option>Replace</option>
                 </select>
               </div>
               <div className="field">
@@ -364,6 +421,65 @@ export function CronJobNewPage() {
                 />
               </div>
             </div>
+
+            <fieldset>
+              <legend>Retry on failure</legend>
+              <div className="row">
+                <div className="field">
+                  <label>Max attempts</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={10}
+                    value={form.retryMaxAttempts}
+                    onChange={(e) => set("retryMaxAttempts", e.target.value)}
+                    placeholder="1 (no retries)"
+                  />
+                </div>
+                <div className="field">
+                  <label>Backoff (seconds, doubles each retry)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={3600}
+                    value={form.retryBackoffSeconds}
+                    onChange={(e) => set("retryBackoffSeconds", e.target.value)}
+                    placeholder="10"
+                  />
+                </div>
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>Response body success criteria</legend>
+              <div className="row">
+                <div className="field">
+                  <label>Body regex</label>
+                  <input
+                    value={form.criteriaBodyRegex}
+                    onChange={(e) => set("criteriaBodyRegex", e.target.value)}
+                    placeholder="finished: OK"
+                  />
+                </div>
+                <div className="field">
+                  <label>JSONPath</label>
+                  <input
+                    value={form.criteriaJsonPath}
+                    onChange={(e) => set("criteriaJsonPath", e.target.value)}
+                    placeholder=".status"
+                  />
+                </div>
+                <div className="field">
+                  <label>Expected value</label>
+                  <input
+                    value={form.criteriaValue}
+                    onChange={(e) => set("criteriaValue", e.target.value)}
+                    placeholder="done"
+                    disabled={!form.criteriaJsonPath}
+                  />
+                </div>
+              </div>
+            </fieldset>
 
             <div className="field">
               <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>

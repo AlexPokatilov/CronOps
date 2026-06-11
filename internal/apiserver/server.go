@@ -58,6 +58,11 @@ func (s *Server) Handler() http.Handler {
 			priv.Put("/cronjobs/{namespace}/{name}", s.handleUpdate)
 			priv.Patch("/cronjobs/{namespace}/{name}/suspend", s.handleSuspend)
 			priv.Delete("/cronjobs/{namespace}/{name}", s.handleDelete)
+			priv.Post("/cronjobs/{namespace}/{name}/run", s.handleRunNow)
+			priv.Get("/cronjobs/{namespace}/{name}/runs", s.handleListRuns)
+			priv.Get("/projects", s.handleListProjects)
+			priv.Post("/projects", s.handleCreateProject)
+			priv.Delete("/projects/{name}", s.handleDeleteProject)
 		})
 	})
 

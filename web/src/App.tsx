@@ -6,6 +6,7 @@ import { DashboardPage } from "./pages/Dashboard";
 import { CronJobsPage } from "./pages/CronJobs";
 import { CronJobNewPage } from "./pages/CronJobNew";
 import { CronJobDetailPage } from "./pages/CronJobDetail";
+import { ProjectsPage } from "./pages/Projects";
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -36,6 +37,7 @@ export default function App() {
           <Route path="/cronjobs" element={<CronJobsPage />} />
           <Route path="/cronjobs/new" element={<CronJobNewPage />} />
           <Route path="/cronjobs/:namespace/:name" element={<CronJobDetailPage />} />
+          <Route path="/projects" element={<ProjectsPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
