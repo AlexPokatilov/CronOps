@@ -1,0 +1,46 @@
+name: Docker Lint
+
+on:
+  pull_request:
+    branches:
+      - "main"
+    paths:
+      - "Dockerfile.controller"
+      - "Dockerfile.server"
+      - ".dockerignore"
+
+permissions:
+  contents: read
+
+jobs:
+  hadolint:
+    name: Run hadolint scanning
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        dockerfile:
+          - Dockerfile.controller
+          - Dockerfile.server
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: ${{ matrix.dockerfile }}
+          format: sarif
+          output-file: hadolint-results.sarif
+          no-fail: true
+
+      - name: Upload analysis results to GitHub
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: hadolint-results.sarif
+          category: hadolint-${{ matrix.dockerfile }}
+          wait-for-processing: true

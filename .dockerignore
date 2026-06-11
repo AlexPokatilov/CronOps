@@ -1,0 +1,9 @@
+.git
+.github
+web/node_modules
+web/dist
+deploy
+examples
+hack
+*.md
+LICENSE

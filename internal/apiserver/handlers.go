@@ -299,7 +299,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sort.Slice(resp.Recent, func(i, j int) bool {
-		return resp.Recent[i].StartedAt.Time.After(resp.Recent[j].StartedAt.Time)
+		return resp.Recent[i].StartedAt.After(resp.Recent[j].StartedAt.Time)
 	})
 	if len(resp.Recent) > 20 {
 		resp.Recent = resp.Recent[:20]

@@ -75,7 +75,7 @@ func (e *Executor) Run(ctx context.Context, job *cronopsv1alpha1.HttpCronJob) Re
 	if err != nil {
 		return Result{Message: fmt.Sprintf("request failed: %v", err)}
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var snippet string
 	if job.CaptureResponseBodyOrDefault() {

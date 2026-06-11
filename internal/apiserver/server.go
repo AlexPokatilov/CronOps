@@ -35,7 +35,6 @@ type Server struct {
 // Handler builds the chi router with all routes mounted.
 func (s *Server) Handler() http.Handler {
 	r := chi.NewRouter()
-	r.Use(chimiddleware.RealIP)
 	r.Use(chimiddleware.Logger)
 	r.Use(chimiddleware.Recoverer)
 	if s.DevCORSOrigin != "" {

@@ -322,13 +322,15 @@ kubectl get hcj -A
 
 ### Тестування на реальному кластері
 
-Після мерджу в `main` CI автоматично публікує артефакти в GHCR:
+CI публікує артефакти в GHCR:
 
-| Артефакт | Адреса | Теги |
+| Артефакт | Адреса | Коли і з яким тегом |
 |---|---|---|
-| Образ контролера | `ghcr.io/alexpokatilov/cronops-controller` | `latest`, `sha-<commit>`, `<semver>` для тегів `v*` |
+| Образ контролера | `ghcr.io/alexpokatilov/cronops-controller` | PR → `build-<run_number>`; GitHub Release → `<tag>` + `latest` |
 | Образ API+UI | `ghcr.io/alexpokatilov/cronops-server` | ті самі |
-| Helm chart | `oci://ghcr.io/alexpokatilov/charts/cronops` | версія з `Chart.yaml`; для тегів `v*` — версія тега |
+| Helm chart | `oci://ghcr.io/alexpokatilov/charts/cronops` | GitHub Release → версія з тега (без `v`), образи в values запінені на тег |
+
+Тобто реліз робиться через **GitHub Release** (зокрема pre-release) на тег `vX.Y.Z`, а кожен PR-білд можна потягнути для тесту за тегом `build-<N>` (номер запуску workflow Build).
 
 > ⚠️ Перша публікація створює пакети **приватними**. Зробіть їх публічними в GitHub → Packages → Package settings → Change visibility, або додайте `imagePullSecrets` у деплойменти.
 
@@ -374,7 +376,7 @@ helm upgrade cronops oci://ghcr.io/alexpokatilov/charts/cronops -n cronops \
 kubectl -n cronops rollout restart deploy/cronops-controller deploy/cronops-server
 ```
 
-Для відтворюваних деплоїв краще пінити образ на коміт: `--set controller.image.tag=sha-<commit>` (тег публікується для кожного коміту в `main`).
+Для тесту конкретного PR-білда пініть образ на тег збірки: `--set controller.image.tag=build-<N> --set server.image.tag=build-<N>`; для відтворюваних деплоїв — реліз-тег `vX.Y.Z`.
 
 ---
 
@@ -439,7 +441,7 @@ CronOps/
 ### Інфраструктура
 - [x] Dockerfile (multi-stage, distroless) для обох сервісів
 - [x] Helm chart + сирі маніфести + RBAC (least privilege)
-- [x] CI (GitHub Actions): go build/vet/test, tsc+vite build, docker build; публікація образів і Helm-чарта в GHCR з `main`/тегів
+- [x] CI (GitHub Actions, окремі workflows): `lint` (golangci-lint, go test, tsc), `build` (PR-образи `build-<N>` у GHCR), `hadolint`, `codeql`, `release` (образи `<tag>`+`latest` і Helm-чарт у GHCR за GitHub Release)
 - [x] `hack/kind-up.sh` для локального kind-кластера
 - [x] Приклади в `examples/`
 

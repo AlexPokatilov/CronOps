@@ -63,7 +63,8 @@ func main() {
 	}
 
 	reconciler := &controller.HttpCronJobReconciler{
-		Client:    mgr.GetClient(),
+		Client: mgr.GetClient(),
+		//nolint:staticcheck // legacy events API kept until controller-runtime removes it
 		Recorder:  mgr.GetEventRecorderFor("cronops-controller"),
 		Scheduler: sched,
 		Executor:  executor.New(mgr.GetClient()),

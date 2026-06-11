@@ -1,0 +1,78 @@
+name: Lint
+
+on:
+  pull_request:
+    branches:
+      - "main"
+    paths-ignore:
+      - "README.md"
+      - "LICENSE"
+      - "deploy/**"
+      - "examples/**"
+      - "hack/**"
+
+permissions:
+  contents: read
+
+jobs:
+  golangci:
+    name: Go lint (golangci-lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      # Built from source so the linter's Go matches the module's go directive.
+      - name: Install golangci-lint
+        run: GOTOOLCHAIN=go1.26.0 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+
+      - name: Run golangci-lint
+        run: $(go env GOPATH)/bin/golangci-lint run ./...
+
+      - name: Check gofmt
+        run: test -z "$(gofmt -l . | grep -v '^web/')"
+
+  gotest:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build
+        run: go build ./...
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run tests
+        run: go test ./...
+
+  typescript:
+    name: TypeScript typecheck & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      - name: Run TypeScript type check and build
+        working-directory: web
+        run: npm run build

@@ -224,7 +224,7 @@ func runEqual(a, b *cronopsv1alpha1.RunResult) bool {
 		a.Message == b.Message &&
 		a.DurationMs == b.DurationMs &&
 		a.ResponseBody == b.ResponseBody &&
-		a.StartedAt.Time.Truncate(time.Second).Equal(b.StartedAt.Time.Truncate(time.Second)) &&
+		a.StartedAt.Truncate(time.Second).Equal(b.StartedAt.Truncate(time.Second)) &&
 		timePtrEqual(a.FinishedAt, b.FinishedAt)
 }
 
@@ -232,7 +232,7 @@ func timePtrEqual(a, b *metav1.Time) bool {
 	if (a == nil) != (b == nil) {
 		return false
 	}
-	return a == nil || a.Time.Truncate(time.Second).Equal(b.Time.Truncate(time.Second))
+	return a == nil || a.Truncate(time.Second).Equal(b.Truncate(time.Second))
 }
 
 func setCondition(st *cronopsv1alpha1.HttpCronJobStatus, status metav1.ConditionStatus, reason, message string, generation int64) {

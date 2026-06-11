@@ -191,10 +191,6 @@ type HttpCronJobList struct {
 	Items           []HttpCronJob `json:"items"`
 }
 
-func init() {
-	SchemeBuilder.Register(&HttpCronJob{}, &HttpCronJobList{})
-}
-
 // IsSuspended reports whether the job is paused via spec.suspend.
 func (j *HttpCronJob) IsSuspended() bool {
 	return j.Spec.Suspend != nil && *j.Spec.Suspend
