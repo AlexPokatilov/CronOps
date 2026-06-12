@@ -1,0 +1,40 @@
+# v0.2 features: project grouping, retries with backoff, Replace concurrency,
+# response-body success criteria and run-object retention.
+apiVersion: cronops.io/v1alpha1
+kind: CronProject
+metadata:
+  name: billing
+spec:
+  description: Billing-team cron endpoints
+---
+apiVersion: cronops.io/v1alpha1
+kind: HttpCronJob
+metadata:
+  name: nightly-invoice-batch
+  namespace: default
+spec:
+  project: billing
+  schedule: "0 2 * * *"
+  timezone: Europe/Kyiv
+  endpoint: https://billing.example.com/api/v1/invoices/run
+  method: POST
+  body: '{"period": "daily"}'
+  headers:
+    - name: Content-Type
+      value: application/json
+  # A run only counts as Success when the HTTP code matches AND the response
+  # body satisfies the criteria below.
+  successHttpCodes: ["200", "202"]
+  successCriteria:
+    jsonPath: ".status"
+    value: "queued"
+  # Failed attempts are retried with exponential backoff: 30s, 60s.
+  retry:
+    maxAttempts: 3
+    backoffSeconds: 30
+  # If the previous nightly batch is somehow still running, cancel it and
+  # start fresh instead of skipping.
+  concurrencyPolicy: Replace
+  # Keep up to 50 HttpCronJobRun objects, but never longer than 7 days.
+  runHistoryLimit: 50
+  runTTLSecondsAfterFinished: 604800

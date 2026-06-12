@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/api.ts","./src/auth.tsx","./src/main.tsx","./src/types.ts","./src/components/Layout.tsx","./src/components/badges.tsx","./src/pages/CronJobDetail.tsx","./src/pages/CronJobNew.tsx","./src/pages/CronJobs.tsx","./src/pages/Dashboard.tsx","./src/pages/Login.tsx","./src/pages/Projects.tsx"],"version":"5.9.3"}

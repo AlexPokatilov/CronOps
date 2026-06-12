@@ -1,0 +1,46 @@
+controller:
+  image:
+    repository: ghcr.io/alexpokatilov/cronops-controller
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 2
+  leaderElect: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+server:
+  image:
+    repository: ghcr.io/alexpokatilov/cronops-server
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 2
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  service:
+    type: ClusterIP
+    port: 80
+  ingress:
+    enabled: false
+    className: ""
+    host: cronops.example.com
+    tls: []
+    annotations: {}
+
+auth:
+  # When true the chart creates the cronops-users and cronops-jwt-key Secrets
+  # from the values below. Set to false to manage them yourself.
+  createSecrets: false
+  # username -> bcrypt hash (htpasswd -bnBC 10 "" 'pass' | tr -d ':\n' | sed 's/$2y/$2a/')
+  users: {}
+  # openssl rand -base64 32
+  jwtKey: ""

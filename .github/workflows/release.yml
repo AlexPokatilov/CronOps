@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  release:
+    types:
+      - "prereleased"
+      - "released"
+
+env:
+  IMAGE_PREFIX: ghcr.io/alexpokatilov
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: cronops-controller
+            dockerfile: Dockerfile.controller
+          - image: cronops-server
+            dockerfile: Dockerfile.server
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract tag name
+        id: release_tag
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/${{ matrix.image }}:${{ steps.release_tag.outputs.tag }}
+            ${{ env.IMAGE_PREFIX }}/${{ matrix.image }}:latest
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  helm-release:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Set chart version from release tag
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          sed -i "s/^version:.*/version: ${VERSION}/" deploy/chart/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${TAG}\"/" deploy/chart/Chart.yaml
+          sed -i "s/tag: latest/tag: ${TAG}/" deploy/chart/values.yaml
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Package and push chart
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          helm package deploy/chart
+          helm push "cronops-${VERSION}.tgz" oci://ghcr.io/alexpokatilov/charts

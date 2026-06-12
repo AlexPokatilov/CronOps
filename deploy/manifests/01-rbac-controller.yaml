@@ -1,0 +1,69 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cronops-controller
+  namespace: cronops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cronops-controller
+rules:
+  - apiGroups: ["cronops.io"]
+    resources: ["httpcronjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["cronops.io"]
+    resources: ["httpcronjobs/status"]
+    verbs: ["get", "update", "patch"]
+  # Run objects: created on schedule, executed, pruned (count cap / TTL).
+  - apiGroups: ["cronops.io"]
+    resources: ["httpcronjobruns"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: ["cronops.io"]
+    resources: ["httpcronjobruns/status"]
+    verbs: ["get", "update", "patch"]
+  # Read credentials referenced by spec.auth.secretRef in job namespaces.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cronops-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cronops-controller
+subjects:
+  - kind: ServiceAccount
+    name: cronops-controller
+    namespace: cronops
+---
+# Leader election lease lives in the controller's own namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cronops-controller-leader-election
+  namespace: cronops
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cronops-controller-leader-election
+  namespace: cronops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cronops-controller-leader-election
+subjects:
+  - kind: ServiceAccount
+    name: cronops-controller
+    namespace: cronops

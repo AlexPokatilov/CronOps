@@ -1,0 +1,7 @@
+apiVersion: v2
+name: cronops
+description: Kubernetes-native cronjob manager for scheduled HTTP calls
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/AlexPokatilov/CronOps

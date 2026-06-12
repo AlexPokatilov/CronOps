@@ -1,0 +1,10 @@
+# Minimal job: only the required fields.
+apiVersion: cronops.io/v1alpha1
+kind: HttpCronJob
+metadata:
+  name: simple-ping
+  namespace: default
+spec:
+  schedule: "*/5 * * * *"
+  endpoint: https://example.com/healthz
+  method: GET
