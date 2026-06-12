@@ -38,22 +38,44 @@ func (r *HttpCronJobRunReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 	jobKey := types.NamespacedName{Namespace: run.Namespace, Name: run.Spec.JobName}
 
-	switch run.Status.Phase {
-	case cronopsv1alpha1.RunPhaseSucceeded, cronopsv1alpha1.RunPhaseFailed:
+	switch {
+	case run.Finished():
 		return r.cleanupFinished(ctx, &run, jobKey)
-	case cronopsv1alpha1.RunPhaseRunning:
+	case run.Status.Phase == cronopsv1alpha1.RunPhaseRunning:
 		if r.Tracker.has(jobKey, run.Name) {
 			return ctrl.Result{}, nil // executing right now in this process
 		}
 		// Running in status but unknown in memory: the previous leader died
-		// mid-run. The HTTP call may or may not have happened — fail it.
-		return ctrl.Result{}, r.finishRun(ctx, req.NamespacedName, func(st *cronopsv1alpha1.HttpCronJobRunStatus) {
-			st.Phase = cronopsv1alpha1.RunPhaseFailed
-			st.Message = "interrupted: controller restarted while the run was in progress"
-		})
+		// mid-run. The HTTP call may or may not have happened — fail it and
+		// publish the failure on the parent job so the two stay consistent.
+		return ctrl.Result{}, r.failOrphanedRun(ctx, &run, jobKey)
 	}
 
 	return r.startRun(ctx, &run, jobKey)
+}
+
+// failOrphanedRun terminates a run abandoned by a previous leader and records
+// the interruption in the parent job's history.
+func (r *HttpCronJobRunReconciler) failOrphanedRun(ctx context.Context, run *cronopsv1alpha1.HttpCronJobRun, jobKey types.NamespacedName) error {
+	const msg = "interrupted: controller restarted while the run was in progress"
+	now := metav1.Now()
+	if err := r.finishRun(ctx, client.ObjectKeyFromObject(run), func(st *cronopsv1alpha1.HttpCronJobRunStatus) {
+		st.Phase = cronopsv1alpha1.RunPhaseFailed
+		st.Message = msg
+	}); err != nil {
+		return err
+	}
+	started := run.CreationTimestamp
+	if run.Status.StartedAt != nil {
+		started = *run.Status.StartedAt
+	}
+	return recordJobRunResult(ctx, r.Client, jobKey, run.CreationTimestamp, cronopsv1alpha1.RunResult{
+		StartedAt:  started,
+		FinishedAt: &now,
+		Result:     cronopsv1alpha1.ResultFailed,
+		Message:    msg,
+		Trigger:    run.Spec.Trigger,
+	})
 }
 
 // startRun claims a pending run and launches its execution goroutine,
@@ -81,8 +103,8 @@ func (r *HttpCronJobRunReconciler) startRun(ctx context.Context, run *cronopsv1a
 			r.Recorder.Event(&job, "Warning", "SkippedConcurrent",
 				"previous run still in progress, skipping (concurrencyPolicy: Forbid)")
 			return ctrl.Result{}, r.finishRun(ctx, runKey, func(st *cronopsv1alpha1.HttpCronJobRunStatus) {
-				st.Phase = cronopsv1alpha1.RunPhaseFailed
-				st.Message = "skipped: previous run still in progress (concurrencyPolicy: Forbid)"
+				st.Phase = cronopsv1alpha1.RunPhaseSkipped
+				st.Message = "previous run still in progress (concurrencyPolicy: Forbid)"
 			})
 		}
 	}
@@ -95,17 +117,18 @@ func (r *HttpCronJobRunReconciler) startRun(ctx context.Context, run *cronopsv1a
 		return ctrl.Result{}, err
 	}
 
-	// The goroutine outlives this reconcile, so it gets its own context;
-	// cancel comes from the tracker (Replace) or process shutdown.
-	runCtx, cancel := context.WithCancel(context.Background())
+	// The goroutine outlives this reconcile, so it derives from the
+	// tracker's leader-scoped context: cancel comes from a Replace or from
+	// losing leadership/shutting down — never from this reconcile ending.
+	runCtx, cancel := context.WithCancel(r.Tracker.Context())
 	r.Tracker.add(jobKey, run.Name, cancel)
-	go r.execute(runCtx, cancel, jobKey, runKey, &job, run.Spec.Trigger, started)
+	go r.execute(runCtx, cancel, jobKey, runKey, &job, run, started)
 	return ctrl.Result{}, nil
 }
 
 // execute performs the HTTP call (with retries) and writes the outcome to the
-// run, the parent job's status and the event stream, then prunes old runs.
-func (r *HttpCronJobRunReconciler) execute(ctx context.Context, cancel context.CancelFunc, jobKey, runKey types.NamespacedName, job *cronopsv1alpha1.HttpCronJob, trigger string, started metav1.Time) {
+// run, the parent job's status and the event stream.
+func (r *HttpCronJobRunReconciler) execute(ctx context.Context, cancel context.CancelFunc, jobKey, runKey types.NamespacedName, job *cronopsv1alpha1.HttpCronJob, run *cronopsv1alpha1.HttpCronJobRun, started metav1.Time) {
 	defer cancel()
 	defer r.Tracker.remove(jobKey, runKey.Name)
 	log := logf.Log.WithName("runner").WithValues("httpcronjobrun", runKey.String())
@@ -115,42 +138,60 @@ func (r *HttpCronJobRunReconciler) execute(ctx context.Context, cancel context.C
 
 	phase := cronopsv1alpha1.RunPhaseFailed
 	message := res.Message
-	if res.Success {
+	canceled := !res.Success && ctx.Err() != nil
+	switch {
+	case res.Success:
 		phase = cronopsv1alpha1.RunPhaseSucceeded
-	} else if ctx.Err() == context.Canceled {
-		message = "canceled: replaced by a newer run (concurrencyPolicy: Replace)"
+	case canceled:
+		// Aborted on purpose — not an endpoint failure.
+		phase = cronopsv1alpha1.RunPhaseCancelled
+		if r.Tracker.ShuttingDown() {
+			message = "canceled: controller shutting down"
+		} else {
+			message = "canceled: replaced by a newer run (concurrencyPolicy: Replace)"
+		}
 	}
 
 	// Status writes use a fresh context: ctx is already canceled on Replace.
 	bg, bgCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer bgCancel()
 
-	if res.Success {
+	switch {
+	case res.Success:
 		r.Recorder.Eventf(job, "Normal", "RunSucceeded", "HTTP %d from %s", res.StatusCode, job.Spec.Endpoint)
-	} else {
+	case canceled:
+		r.Recorder.Eventf(job, "Normal", "RunCanceled", "%s", message)
+	default:
 		r.Recorder.Eventf(job, "Warning", "RunFailed", "%s", message)
 	}
 
-	result := cronopsv1alpha1.RunResult{
-		StartedAt:      started,
-		FinishedAt:     &finished,
-		Result:         cronopsv1alpha1.ResultFailed,
-		HTTPStatusCode: int32(res.StatusCode),
-		Message:        message,
-		DurationMs:     finished.Sub(started.Time).Milliseconds(),
-		ResponseBody:   res.Body,
-		Attempts:       res.Attempts,
-		Trigger:        trigger,
-	}
-	if res.Success {
-		result.Result = cronopsv1alpha1.ResultSuccess
-	}
-	if err := recordJobRunResult(bg, r.Client, jobKey, result); err != nil {
-		log.Error(err, "recording run result on job")
+	// Cancelled runs stay out of the job's lastRun/history: they say nothing
+	// about the endpoint and would skew success metrics. The Run object
+	// itself remains as the audit record.
+	if !canceled {
+		result := cronopsv1alpha1.RunResult{
+			StartedAt:      started,
+			FinishedAt:     &finished,
+			Result:         cronopsv1alpha1.ResultFailed,
+			HTTPStatusCode: int32(res.StatusCode),
+			Message:        message,
+			DurationMs:     finished.Sub(started.Time).Milliseconds(),
+			ResponseBody:   res.Body,
+			Attempts:       res.Attempts,
+			Trigger:        run.Spec.Trigger,
+		}
+		if res.Success {
+			result.Result = cronopsv1alpha1.ResultSuccess
+		}
+		if err := recordJobRunResult(bg, r.Client, jobKey, run.CreationTimestamp, result); err != nil {
+			log.Error(err, "recording run result on job")
+		}
 	}
 
 	// The terminal phase goes last, so anyone who observed the run finish
-	// also sees the result already published on the parent job.
+	// also sees the result already published on the parent job. The status
+	// update triggers a reconcile of this run, whose cleanupFinished pass is
+	// the single GC point (count cap + TTL).
 	if err := r.patchRunStatus(bg, runKey, func(st *cronopsv1alpha1.HttpCronJobRunStatus) {
 		st.Phase = phase
 		st.StartedAt = &started
@@ -162,10 +203,6 @@ func (r *HttpCronJobRunReconciler) execute(ctx context.Context, cancel context.C
 		st.Attempts = res.Attempts
 	}); err != nil {
 		log.Error(err, "recording run status")
-	}
-
-	if err := r.pruneRuns(bg, jobKey, job.RunHistoryLimitOrDefault()); err != nil {
-		log.Error(err, "pruning old runs")
 	}
 }
 
@@ -196,15 +233,22 @@ func (r *HttpCronJobRunReconciler) patchRunStatus(ctx context.Context, key types
 	})
 }
 
-// cleanupFinished deletes the run once the parent job's TTL elapses, or
-// schedules a requeue for the remaining time. Without a TTL the count-based
-// pruning after each run is the only garbage collection.
+// cleanupFinished is the single GC point for terminal runs, reached via the
+// reconcile that every terminal status write triggers. It count-prunes the
+// job's runs (covering Skipped/Cancelled/orphaned runs that never executed)
+// and deletes this run once the optional TTL elapses, requeueing for the
+// remaining time otherwise.
 func (r *HttpCronJobRunReconciler) cleanupFinished(ctx context.Context, run *cronopsv1alpha1.HttpCronJobRun, jobKey types.NamespacedName) (ctrl.Result, error) {
 	var job cronopsv1alpha1.HttpCronJob
 	if err := r.Get(ctx, jobKey, &job); err != nil {
 		// Job gone: owner-reference GC removes the runs.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+
+	if err := r.pruneRuns(ctx, jobKey, job.RunHistoryLimitOrDefault()); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	ttl := job.Spec.RunTTLSecondsAfterFinished
 	if ttl == nil || run.Status.FinishedAt == nil {
 		return ctrl.Result{}, nil

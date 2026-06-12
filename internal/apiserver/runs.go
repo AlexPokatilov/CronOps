@@ -11,43 +11,32 @@ import (
 	cronopsv1alpha1 "github.com/AlexPokatilov/CronOps/api/v1alpha1"
 )
 
-// runView is the wire format for a single HttpCronJobRun.
+// runView is the wire format for a single HttpCronJobRun: the status fields
+// are embedded as-is so new fields flow through without a hand-written
+// mapping, plus identity metadata from the object itself.
 type runView struct {
-	Name           string       `json:"name"`
-	Namespace      string       `json:"namespace"`
-	JobName        string       `json:"jobName"`
-	Trigger        string       `json:"trigger"`
-	Phase          string       `json:"phase"`
-	StartedAt      *metav1.Time `json:"startedAt,omitempty"`
-	FinishedAt     *metav1.Time `json:"finishedAt,omitempty"`
-	HTTPStatusCode int32        `json:"httpStatusCode,omitempty"`
-	Message        string       `json:"message,omitempty"`
-	DurationMs     int64        `json:"durationMs,omitempty"`
-	ResponseBody   string       `json:"responseBody,omitempty"`
-	Attempts       int32        `json:"attempts,omitempty"`
-	CreatedAt      metav1.Time  `json:"createdAt"`
+	Name      string      `json:"name"`
+	Namespace string      `json:"namespace"`
+	JobName   string      `json:"jobName"`
+	Trigger   string      `json:"trigger"`
+	CreatedAt metav1.Time `json:"createdAt"`
+
+	cronopsv1alpha1.HttpCronJobRunStatus
 }
 
 func toRunView(r *cronopsv1alpha1.HttpCronJobRun) runView {
-	phase := r.Status.Phase
-	if phase == "" {
-		phase = "Pending"
+	v := runView{
+		Name:                 r.Name,
+		Namespace:            r.Namespace,
+		JobName:              r.Spec.JobName,
+		Trigger:              r.Spec.Trigger,
+		CreatedAt:            r.CreationTimestamp,
+		HttpCronJobRunStatus: r.Status,
 	}
-	return runView{
-		Name:           r.Name,
-		Namespace:      r.Namespace,
-		JobName:        r.Spec.JobName,
-		Trigger:        r.Spec.Trigger,
-		Phase:          phase,
-		StartedAt:      r.Status.StartedAt,
-		FinishedAt:     r.Status.FinishedAt,
-		HTTPStatusCode: r.Status.HTTPStatusCode,
-		Message:        r.Status.Message,
-		DurationMs:     r.Status.DurationMs,
-		ResponseBody:   r.Status.ResponseBody,
-		Attempts:       r.Status.Attempts,
-		CreatedAt:      r.CreationTimestamp,
+	if v.Phase == "" {
+		v.Phase = "Pending"
 	}
+	return v
 }
 
 // handleRunNow creates a Manual HttpCronJobRun; the controller picks it up

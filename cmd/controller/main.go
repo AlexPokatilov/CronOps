@@ -65,6 +65,12 @@ func main() {
 	//nolint:staticcheck // legacy events API kept until controller-runtime removes it
 	recorder := mgr.GetEventRecorderFor("cronops-controller")
 	tracker := controller.NewRunTracker()
+	// The tracker runnable carries the leader-scoped context that run
+	// goroutines derive from, so losing leadership cancels in-flight runs.
+	if err := mgr.Add(tracker); err != nil {
+		setupLog.Error(err, "unable to add run tracker runnable")
+		os.Exit(1)
+	}
 
 	reconciler := &controller.HttpCronJobReconciler{
 		Client:    mgr.GetClient(),

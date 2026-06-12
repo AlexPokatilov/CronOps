@@ -10,6 +10,12 @@ const (
 	RunPhaseRunning   = "Running"
 	RunPhaseSucceeded = "Succeeded"
 	RunPhaseFailed    = "Failed"
+	// RunPhaseCancelled marks a run aborted on purpose (concurrencyPolicy:
+	// Replace or controller shutdown); not a failure of the endpoint.
+	RunPhaseCancelled = "Cancelled"
+	// RunPhaseSkipped marks a run that never executed because another run
+	// was in progress (concurrencyPolicy: Forbid).
+	RunPhaseSkipped = "Skipped"
 )
 
 // HttpCronJobRunSpec describes a single requested run of a HttpCronJob.
@@ -29,7 +35,7 @@ type HttpCronJobRunSpec struct {
 
 // HttpCronJobRunStatus is the observed outcome of the run.
 type HttpCronJobRunStatus struct {
-	// +kubebuilder:validation:Enum=Running;Succeeded;Failed
+	// +kubebuilder:validation:Enum=Running;Succeeded;Failed;Cancelled;Skipped
 	// +optional
 	Phase string `json:"phase,omitempty"`
 	// +optional
@@ -82,7 +88,11 @@ type HttpCronJobRunList struct {
 
 // Finished reports whether the run reached a terminal phase.
 func (r *HttpCronJobRun) Finished() bool {
-	return r.Status.Phase == RunPhaseSucceeded || r.Status.Phase == RunPhaseFailed
+	switch r.Status.Phase {
+	case RunPhaseSucceeded, RunPhaseFailed, RunPhaseCancelled, RunPhaseSkipped:
+		return true
+	}
+	return false
 }
 
 // NewRunForJob builds a HttpCronJobRun owned by the job. The controller

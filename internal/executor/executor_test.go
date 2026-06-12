@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -313,6 +314,44 @@ func TestRunJSONPathCriteria(t *testing.T) {
 	job.Spec.SuccessCriteria = &cronopsv1alpha1.SuccessCriteriaSpec{JSONPath: ".missing"}
 	if res := e.Run(context.Background(), job); res.Success {
 		t.Fatalf("Run() = %+v, want failure on unresolved jsonPath", res)
+	}
+}
+
+func TestRunJSONPathEmptyValue(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"","error":""}`))
+	}))
+	defer ts.Close()
+
+	e := New(fake.NewClientBuilder().WithScheme(newScheme(t)).Build())
+
+	// A field that legitimately resolves to "" must pass an existence check.
+	job := baseJob(ts.URL)
+	job.Spec.SuccessCriteria = &cronopsv1alpha1.SuccessCriteriaSpec{JSONPath: ".error"}
+	if res := e.Run(context.Background(), job); !res.Success {
+		t.Fatalf("Run() = %+v, want success when path resolves to empty string", res)
+	}
+}
+
+func TestRunCriteriaBodyTooLarge(t *testing.T) {
+	big := make([]byte, (1<<20)+100) // just over maxDrainBytes
+	for i := range big {
+		big[i] = 'x'
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(big)
+	}))
+	defer ts.Close()
+
+	job := baseJob(ts.URL)
+	job.Spec.SuccessCriteria = &cronopsv1alpha1.SuccessCriteriaSpec{BodyRegex: "x+"}
+	e := New(fake.NewClientBuilder().WithScheme(newScheme(t)).Build())
+	res := e.Run(context.Background(), job)
+	if res.Success {
+		t.Fatalf("Run() = %+v, want explicit failure on truncated body", res)
+	}
+	if !strings.Contains(res.Message, "exceeds") {
+		t.Fatalf("message = %q, want a clear truncation error", res.Message)
 	}
 }
 

@@ -172,10 +172,12 @@ func patchJobStatus(ctx context.Context, c client.Client, key types.NamespacedNa
 
 // recordJobRunResult publishes a finished run into the parent job's status:
 // lastRun, the bounded history ring and the recomputed next fire time.
-func recordJobRunResult(ctx context.Context, c client.Client, key types.NamespacedName, run cronopsv1alpha1.RunResult) error {
+// scheduled is the moment the run was requested (the Run object's creation,
+// i.e. the cron tick or the run-now click), not when execution began.
+func recordJobRunResult(ctx context.Context, c client.Client, key types.NamespacedName, scheduled metav1.Time, run cronopsv1alpha1.RunResult) error {
 	return patchJobStatus(ctx, c, key, func(job *cronopsv1alpha1.HttpCronJob) {
 		st := &job.Status
-		st.LastScheduleTime = &run.StartedAt
+		st.LastScheduleTime = &scheduled
 		st.LastRun = &run
 		limit := int(job.HistoryLimitOrDefault())
 		st.History = append([]cronopsv1alpha1.RunResult{run}, st.History...)

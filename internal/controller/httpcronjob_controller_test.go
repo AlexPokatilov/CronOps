@@ -171,13 +171,22 @@ func TestReconcileDeleted(t *testing.T) {
 }
 
 // runJobOnce fires the cron callback and drives the created run through the
-// run reconciler to completion, like the real two-controller pipeline.
+// run reconciler to completion, like the real two-controller pipeline: start
+// pending runs, wait for the goroutines, then reconcile the terminal runs
+// (the pass the status-update watch event would trigger, where GC lives).
 func runJobOnce(t *testing.T, r *HttpCronJobReconciler, rr *HttpCronJobRunReconciler, c client.Client, key types.NamespacedName) {
 	t.Helper()
 	r.runJob(key)
+	reconcilePendingRuns(t, rr, c, key.Namespace)
+	waitRunsFinished(t, c, key.Namespace)
+	reconcileAllRuns(t, rr, c, key.Namespace)
+}
+
+func reconcilePendingRuns(t *testing.T, rr *HttpCronJobRunReconciler, c client.Client, ns string) {
+	t.Helper()
 	ctx := context.Background()
 	var runs cronopsv1alpha1.HttpCronJobRunList
-	if err := c.List(ctx, &runs, client.InNamespace(key.Namespace)); err != nil {
+	if err := c.List(ctx, &runs, client.InNamespace(ns)); err != nil {
 		t.Fatal(err)
 	}
 	for i := range runs.Items {
@@ -189,7 +198,21 @@ func runJobOnce(t *testing.T, r *HttpCronJobReconciler, rr *HttpCronJobRunReconc
 			t.Fatalf("run reconcile: %v", err)
 		}
 	}
-	waitRunsFinished(t, c, key.Namespace)
+}
+
+func reconcileAllRuns(t *testing.T, rr *HttpCronJobRunReconciler, c client.Client, ns string) {
+	t.Helper()
+	ctx := context.Background()
+	var runs cronopsv1alpha1.HttpCronJobRunList
+	if err := c.List(ctx, &runs, client.InNamespace(ns)); err != nil {
+		t.Fatal(err)
+	}
+	for i := range runs.Items {
+		req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(&runs.Items[i])}
+		if _, err := rr.Reconcile(ctx, req); err != nil {
+			t.Fatalf("run reconcile: %v", err)
+		}
+	}
 }
 
 // waitRunsFinished blocks until every run in the namespace reached a terminal
@@ -356,6 +379,74 @@ func TestRunPruning(t *testing.T) {
 			t.Fatalf("runs = %d, want pruned to runHistoryLimit=2", len(runs))
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestForbidSkipMarksRunSkipped(t *testing.T) {
+	key := types.NamespacedName{Namespace: "ns", Name: "job"}
+	r, c := newReconciler(t, testJob())
+	rr := newRunReconciler(t, r, c)
+
+	// Simulate an in-flight run so the Forbid path triggers.
+	r.Tracker.add(key, "other-run", func() {})
+	defer r.Tracker.remove(key, "other-run")
+
+	job := getJob(t, c, key)
+	run := cronopsv1alpha1.NewRunForJob(job, cronopsv1alpha1.TriggerManual)
+	if err := c.Create(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(run)}
+	if _, err := rr.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+
+	var got cronopsv1alpha1.HttpCronJobRun
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(run), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != cronopsv1alpha1.RunPhaseSkipped {
+		t.Fatalf("phase = %q, want Skipped", got.Status.Phase)
+	}
+	// A skip says nothing about the endpoint: job history stays untouched.
+	if job = getJob(t, c, key); job.Status.LastRun != nil {
+		t.Fatalf("lastRun = %+v, want nil after a skipped run", job.Status.LastRun)
+	}
+}
+
+func TestOrphanedRunFailedAndRecorded(t *testing.T) {
+	key := types.NamespacedName{Namespace: "ns", Name: "job"}
+	r, c := newReconciler(t, testJob())
+	rr := newRunReconciler(t, r, c)
+
+	job := getJob(t, c, key)
+	run := cronopsv1alpha1.NewRunForJob(job, cronopsv1alpha1.TriggerSchedule)
+	if err := c.Create(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+	started := metav1.Now()
+	run.Status.Phase = cronopsv1alpha1.RunPhaseRunning
+	run.Status.StartedAt = &started
+	if err := c.Status().Update(context.Background(), run); err != nil {
+		t.Fatal(err)
+	}
+
+	// Running in etcd but absent from the tracker = previous leader died.
+	req := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(run)}
+	if _, err := rr.Reconcile(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+
+	var got cronopsv1alpha1.HttpCronJobRun
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(run), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status.Phase != cronopsv1alpha1.RunPhaseFailed {
+		t.Fatalf("phase = %q, want Failed for orphaned run", got.Status.Phase)
+	}
+	job = getJob(t, c, key)
+	if job.Status.LastRun == nil || job.Status.LastRun.Result != cronopsv1alpha1.ResultFailed {
+		t.Fatalf("lastRun = %+v, want the interruption recorded on the job", job.Status.LastRun)
 	}
 }
 

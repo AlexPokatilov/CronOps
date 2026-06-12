@@ -164,6 +164,7 @@ spec:
     jsonPath: ".status"           # JSONPath по JSON-тілу ("{.status}" теж приймається)
     value: "queued"               # очікуване значення; без value — достатньо існування
     # bodyRegex: "finished: OK"   # та/або RE2-regex по сирому тілу
+    # ліміт: критерії оцінюються по перших 1 МіБ тіла; більше тіло = явна помилка
   retry:                          # ретраї невдалих спроб (v0.2)
     maxAttempts: 3                # всього спроб, включно з першою (default: 1)
     backoffSeconds: 10            # пауза перед ретраєм, подвоюється щоразу (default: 10)
@@ -215,7 +216,8 @@ status:                           # заповнює контролер (status 
 
 - **Повна історія** запусків, що переживає кільцевий буфер `status.history`; читається через `kubectl get hcjr` або UI.
 - **Механізм run-now**: server створює Run із `spec.trigger: Manual`, контролер його виконує — той самий шлях, що й для запусків за розкладом. Виконання завжди лишається за контролером.
-- `spec`: `jobName`, `trigger` (Schedule|Manual). `status`: `phase` (Running|Succeeded|Failed), `startedAt/finishedAt`, `httpStatusCode`, `durationMs`, `responseBody`, `attempts`, `message`.
+- `spec`: `jobName`, `trigger` (Schedule|Manual). `status`: `phase` (Running|Succeeded|Failed|Cancelled|Skipped), `startedAt/finishedAt`, `httpStatusCode`, `durationMs`, `responseBody`, `attempts`, `message`.
+- **Cancelled** (витіснений через `Replace` або shutdown контролера) і **Skipped** (`Forbid` під час активного запуску) — не збої: вони не потрапляють у `lastRun`/`history` задачі й не псують статистику успішності; Run-об'єкт лишається як аудит-запис.
 - **Прибирання**: ownerReference (видалення задачі видаляє її Run-и), ліміт кількості `spec.runHistoryLimit` (default 20) і опційний TTL `spec.runTTLSecondsAfterFinished`.
 
 ### CRD: CronProject (v0.2)

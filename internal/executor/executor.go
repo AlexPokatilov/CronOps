@@ -55,6 +55,10 @@ func New(c client.Client) *Executor {
 	}
 }
 
+// maxBackoff caps the exponential retry delay so a high backoffSeconds with
+// many attempts cannot park a run in Running for the better part of a day.
+const maxBackoff = time.Hour
+
 // Run executes the HTTP call for the job, retrying failed attempts with
 // exponential backoff per spec.retry, and reports the final outcome.
 func (e *Executor) Run(ctx context.Context, job *cronopsv1alpha1.HttpCronJob) Result {
@@ -74,7 +78,7 @@ func (e *Executor) Run(ctx context.Context, job *cronopsv1alpha1.HttpCronJob) Re
 			return res
 		case <-time.After(backoff):
 		}
-		backoff *= 2
+		backoff = min(backoff*2, maxBackoff)
 	}
 }
 
@@ -106,13 +110,19 @@ func (e *Executor) attempt(ctx context.Context, job *cronopsv1alpha1.HttpCronJob
 	defer func() { _ = resp.Body.Close() }()
 
 	// The body is needed in full (bounded) for success criteria; only a
-	// short snippet of it is ever stored in run history.
+	// short snippet of it is ever stored in run history. Reading one byte
+	// past the limit detects truncation instead of silently evaluating
+	// criteria against a cut-off body.
 	criteria := job.Spec.SuccessCriteria
 	readLimit := int64(maxCaptureBytes)
 	if criteria != nil {
 		readLimit = maxDrainBytes
 	}
-	captured, _ := io.ReadAll(io.LimitReader(resp.Body, readLimit))
+	captured, _ := io.ReadAll(io.LimitReader(resp.Body, readLimit+1))
+	truncated := int64(len(captured)) > readLimit
+	if truncated {
+		captured = captured[:readLimit]
+	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxDrainBytes))
 
 	var snippet string
@@ -127,6 +137,12 @@ func (e *Executor) attempt(ctx context.Context, job *cronopsv1alpha1.HttpCronJob
 	}
 	if !res.Success {
 		res.Message = fmt.Sprintf("unexpected status %d", resp.StatusCode)
+		return res
+	}
+	if criteria != nil && truncated {
+		// An honest error beats a confusing one from matching half a body.
+		res.Success = false
+		res.Message = fmt.Sprintf("response body exceeds %d bytes; success criteria cannot be evaluated reliably", maxDrainBytes)
 		return res
 	}
 	if err := CheckBody(captured, criteria); err != nil {
@@ -254,9 +270,8 @@ func evalJSONPath(body []byte, expr string) (string, error) {
 	if err := jp.Execute(&out, doc); err != nil {
 		return "", fmt.Errorf("jsonPath %s did not match response body: %v", expr, err)
 	}
-	if out.Len() == 0 {
-		return "", fmt.Errorf("jsonPath %s resolved to an empty result", expr)
-	}
+	// An empty rendering is fine: the path resolved (existence is proven by
+	// Execute succeeding) and the value may legitimately be "".
 	return out.String(), nil
 }
 

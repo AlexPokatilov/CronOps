@@ -102,6 +102,8 @@ spec:
                 - Running
                 - Succeeded
                 - Failed
+                - Cancelled
+                - Skipped
                 type: string
               responseBody:
                 description: |-

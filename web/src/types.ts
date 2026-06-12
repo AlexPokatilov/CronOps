@@ -63,7 +63,7 @@ export interface RunView {
   namespace: string;
   jobName: string;
   trigger: "Schedule" | "Manual";
-  phase: "Pending" | "Running" | "Succeeded" | "Failed";
+  phase: "Pending" | "Running" | "Succeeded" | "Failed" | "Cancelled" | "Skipped";
   startedAt?: string;
   finishedAt?: string;
   httpStatusCode?: number;
